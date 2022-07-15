@@ -1,8 +1,6 @@
-//
-// Created by carnon on 2022/7/14.
-//
-#include "yolov7.h"
 #include "chrono"
+#include "opencv2/opencv.hpp"
+#include "yolov7.h"
 
 void drawResult(float* result, int num, cv::Mat &frame){
     for(int i=0; i<num; i++){

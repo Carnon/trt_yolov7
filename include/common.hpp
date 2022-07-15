@@ -6,7 +6,8 @@
 #include <map>
 #include <vector>
 #include "NvInfer.h"
-#include <opencv2/opencv.hpp>
+#include <cassert>
+#include <cmath>
 
 using namespace nvinfer1;
 

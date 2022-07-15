@@ -1,7 +1,8 @@
-#include "yolov7.h"
-#include "../preprocess.h"
-#include "../decode.h"
+#include <algorithm>
 #include "cuda_utils.h"
+#include "preprocess.h"
+#include "decode.h"
+#include "yolov7.h"
 
 static Logger gLogger;
 

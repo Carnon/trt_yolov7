@@ -264,7 +264,7 @@ void loadEngine(const char* engine_path){
     std::fstream file;
     file.open(engine_path, std::ios::in);
     if(!file.is_open()){
-        std::cout<<"read file yolov5s_fp16.engine error"<<std::endl;
+        std::cout<<"read engine file error"<<std::endl;
         cached_engine = "";
     }
 

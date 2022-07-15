@@ -370,7 +370,7 @@ std::vector<DetectRes> postProcess(float *output){
     std::vector<DetectRes> result;
     for(int i=0; i<BOX_SIZE; i++){
         float* row = output + 6*i;
-        if(row[5] > 0.35){
+        if(row[5] > 0.50){
             DetectRes res;
             res.x = row[0];
             res.y = row[1];

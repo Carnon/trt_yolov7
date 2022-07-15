@@ -12,7 +12,7 @@ static const int NUM_CLASS = 80;
 
 const char* INPUT_BLOB_NAME = "data";
 const char* OUTPUT_BLOB_NAME = "prob";
-static const int ANCHOR_SIZE = 80*80*3 + 40*40*3 + 20*20*3;
+static const int BOX_SIZE = 80*80*3 + 40*40*3 + 20*20*3;
 
 
 ICudaEngine* build_engine(IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path){
@@ -282,13 +282,13 @@ void loadEngine(const char* engine_path){
     assert(context != nullptr);
 
     bufferSize[0] = 3*INPUT_H*INPUT_W*sizeof(float);
-    bufferSize[1] = ANCHOR_SIZE*(NUM_CLASS+5)*sizeof(float);
+    bufferSize[1] = BOX_SIZE*(NUM_CLASS+5)*sizeof(float);
     int max_image_size = 3000*3000*3*sizeof(float);
 
     CUDA_CHECK(cudaMalloc(&psrc_device, max_image_size));
     CUDA_CHECK(cudaMalloc(&buffers[0], bufferSize[0]));
     CUDA_CHECK(cudaMalloc(&buffers[1], bufferSize[1]));
-    CUDA_CHECK(cudaMalloc(&pdst_device, ANCHOR_SIZE*6*sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&pdst_device, BOX_SIZE*6*sizeof(float)));
     CUDA_CHECK(cudaStreamCreate(&stream));
 
     std::cout<<"load engine ok! "<<std::endl;
@@ -313,11 +313,11 @@ int inferImage(uint8_t* data, int w, int h, float* result){
     resize_img(psrc_device, w, h, buffers[0], INPUT_W, INPUT_H, scale, stream);
 
     // 2. model infer 模型推理
-    auto *output = new float[ANCHOR_SIZE*6];
+    auto *output = new float[BOX_SIZE*6];
     context->enqueue(1, (void **)buffers, stream, nullptr);
     // 3. 解析yolo输出，使用cuda代码实现。
     decode_output(buffers[1], pdst_device, INPUT_H, INPUT_W, 1/scale, stream);
-    cudaMemcpyAsync(output, pdst_device, ANCHOR_SIZE*6*sizeof(float), cudaMemcpyDeviceToHost, stream);
+    cudaMemcpyAsync(output, pdst_device, BOX_SIZE*6*sizeof(float), cudaMemcpyDeviceToHost, stream);
     cudaStreamSynchronize(stream);
 
     //4. 后处理
@@ -368,7 +368,7 @@ void NmsDetect(std::vector<DetectRes> &detections) {
 
 std::vector<DetectRes> postProcess(float *output){
     std::vector<DetectRes> result;
-    for(int i=0; i<ANCHOR_SIZE; i++){
+    for(int i=0; i<BOX_SIZE; i++){
         float* row = output + 6*i;
         if(row[5] > 0.35){
             DetectRes res;

@@ -2,6 +2,8 @@
 
 without onnx parser
 
+ubuntu18.04 cuda-11.1 tensorrt-7.2.2.3 opencv
+
 ```
     git clone https://github.com/WongKinYiu/yolov7.git
     

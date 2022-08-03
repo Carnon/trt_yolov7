@@ -82,7 +82,7 @@ IScaleLayer* addBatchNorm2d(INetworkDefinition *network, std::map<std::string, W
 }
 
 // Conv
-IElementWiseLayer* convBnSilu(INetworkDefinition *network, std::map<std::string, Weights>& weightMap, ITensor& input, int c2, int k, int s, int p, std::string lname){
+IActivationLayer* convBnRelu(INetworkDefinition *network, std::map<std::string, Weights>& weightMap, ITensor& input, int c2, int k, int s, int p, std::string lname){
     Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
     IConvolutionLayer* conv1 = network->addConvolutionNd(input, c2, DimsHW{k, k}, weightMap[lname + ".conv.weight"], emptywts);
     assert(conv1);
@@ -92,74 +92,10 @@ IElementWiseLayer* convBnSilu(INetworkDefinition *network, std::map<std::string,
 
     IScaleLayer* bn1 = addBatchNorm2d(network, weightMap, *conv1->getOutput(0), lname+".bn", 1e-5);
 
-    // silu = x * sigmoid(x)
-    IActivationLayer* sig1 = network->addActivation(*bn1->getOutput(0), ActivationType::kSIGMOID);
-    assert(sig1);
-    IElementWiseLayer* ew1 = network->addElementWise(*bn1->getOutput(0), *sig1->getOutput(0), ElementWiseOperation::kPROD);
-    assert(ew1);
-    return ew1;
-}
-
-// SPPCSPC
-IElementWiseLayer* SPPCSPC(INetworkDefinition *network, std::map<std::string, Weights>& weightMap, ITensor& input, int c2, const std::string& lname){
-    int c_ = int(2 * c2 * 0.5);
-    IElementWiseLayer* cv1 = convBnSilu(network, weightMap, input, c_, 1, 1, 0, lname+".cv1");
-    IElementWiseLayer* cv2 = convBnSilu(network, weightMap, input, c_, 1, 1, 0, lname+".cv2");
-
-    IElementWiseLayer* cv3 = convBnSilu(network, weightMap, *cv1->getOutput(0), c_, 3, 1, 1, lname+".cv3");
-    IElementWiseLayer* cv4 = convBnSilu(network, weightMap, *cv3->getOutput(0), c_, 1, 1, 0, lname+".cv4");
-
-    IPoolingLayer* m1 = network->addPoolingNd(*cv4->getOutput(0), PoolingType::kMAX, DimsHW{5, 5});
-    m1->setStrideNd(DimsHW{1, 1});
-    m1->setPaddingNd(DimsHW{2, 2});
-    IPoolingLayer* m2 = network->addPoolingNd(*cv4->getOutput(0), PoolingType::kMAX, DimsHW{9, 9});
-    m2->setStrideNd(DimsHW{1, 1});
-    m2->setPaddingNd(DimsHW{4, 4});
-    IPoolingLayer* m3 = network->addPoolingNd(*cv4->getOutput(0), PoolingType::kMAX, DimsHW{13, 13});
-    m3->setStrideNd(DimsHW{1, 1});
-    m3->setPaddingNd(DimsHW{6, 6});
-
-    ITensor* input_tensors[] = {cv1->getOutput(0), m1->getOutput(0), m2->getOutput(0), m3->getOutput(0)};
-    IConcatenationLayer* concat = network->addConcatenation(input_tensors, 4);
-    // 0U
-    concat->setAxis(0);
-
-    IElementWiseLayer* cv5 = convBnSilu(network, weightMap, *concat->getOutput(0), c_, 1, 1, 0, lname+".cv5");
-    IElementWiseLayer* cv6 = convBnSilu(network, weightMap, *cv5->getOutput(0), c_, 3, 1, 1, lname+".cv6");
-
-    ITensor* input_tensors2[] = {cv6->getOutput(0), cv2->getOutput(0)};
-    IConcatenationLayer* concat1 = network->addConcatenation(input_tensors2, 2);
-    // 0U
-    concat1->setAxis(0);
-
-
-    IElementWiseLayer* cv7 = convBnSilu(network, weightMap, *concat1->getOutput(0), c2, 1, 1, 0, lname+".cv7");
-    return cv7;
-}
-
-// RepConv
-IElementWiseLayer* RepConv(INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int c2, int k, int s, const std::string& lname){
-    Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
-    // 256 * 128 * 3 *3
-    IConvolutionLayer* rbr_dense_conv = network->addConvolutionNd(input, c2, DimsHW{k, k}, weightMap[lname+".rbr_dense.0.weight"], emptywts);
-    assert(rbr_dense_conv);
-    rbr_dense_conv->setPaddingNd(DimsHW{k/2, k/2});
-    rbr_dense_conv->setStrideNd(DimsHW{s, s});
-    rbr_dense_conv->setName((lname+".rbr_dense.0").c_str());
-    IScaleLayer* rbr_dense_bn = addBatchNorm2d(network, weightMap, *rbr_dense_conv->getOutput(0), lname+".rbr_dense.1", 1e-3);
-
-    IConvolutionLayer* rbr_1x1_conv = network->addConvolutionNd(input, c2, DimsHW{1, 1}, weightMap[lname+".rbr_1x1.0.weight"], emptywts);
-    assert(rbr_1x1_conv);
-    rbr_1x1_conv->setStrideNd(DimsHW{s, s});
-    rbr_1x1_conv->setName((lname+".rbr_1x1.0").c_str());
-    IScaleLayer* rbr_1x1_bn = addBatchNorm2d(network, weightMap, *rbr_1x1_conv->getOutput(0), lname+".rbr_1x1.1", 1e-3);
-
-    IElementWiseLayer* ew1 = network->addElementWise(*rbr_dense_bn->getOutput(0), *rbr_1x1_bn->getOutput(0), ElementWiseOperation::kSUM);
-    assert(ew1);
-    // silu
-    IActivationLayer* sigmoid = network->addActivation(*ew1->getOutput(0), ActivationType::kSIGMOID);
-    IElementWiseLayer* ew2 = network->addElementWise(*ew1->getOutput(0), *sigmoid->getOutput(0), ElementWiseOperation::kPROD);
-    return ew2;
+    IActivationLayer* relu1 = network->addActivation(*bn1->getOutput(0), ActivationType::kLEAKY_RELU);
+    assert(relu1);
+    relu1->setAlpha(0.1);
+    return relu1;
 }
 
 #endif //YOLOV7_COMMON_H

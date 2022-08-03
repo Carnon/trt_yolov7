@@ -20,7 +20,7 @@ def draw_result(frame, n, boxes):
 
 def main():
     libc = ctypes.cdll.LoadLibrary("build/libyolov7.so")
-    libc.loadEngine(ctypes.create_string_buffer("yolov7.engine".encode("utf8")))
+    libc.loadEngine(ctypes.create_string_buffer("yolov7-tiny.engine".encode("utf8")))
 
     image = cv2.imread("image/test.jpeg")
     h, w = image.shape[:2]
@@ -31,14 +31,14 @@ def main():
     print("infer time: ", time.time() - start)
     draw_result(image, num, result)
 
-    cv2.imwrite("result/yolov5_result.jpg", image)
+    cv2.imwrite("result.jpg", image)
     libc.release()
 
 
 def test_fps():
     capture = cv2.VideoCapture(0)
     libc = ctypes.cdll.LoadLibrary("build/libyolov7.so")
-    libc.loadEngine(ctypes.create_string_buffer("yolov7.engine".encode("utf8")))
+    libc.loadEngine(ctypes.create_string_buffer("yolov7-tiny.engine".encode("utf8")))
     while True:
         ref, frame = capture.read()
         t1 = time.time()

@@ -1,10 +1,10 @@
 import struct
 import torch
 
-state_dict = torch.load("yolov7.pt", map_location="cpu")
+state_dict = torch.load("yolov7-tiny.pt", map_location="cpu")
 state_dict = state_dict["model"].state_dict()
 
-with open("yolov7.wts", 'w') as f:
+with open("yolov7-tiny.wts", 'w') as f:
     f.write("{}\n".format(len(state_dict.keys())))
 
     for k, v in state_dict.items():

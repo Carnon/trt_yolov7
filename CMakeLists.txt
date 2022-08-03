@@ -13,6 +13,8 @@ include_directories(/usr/local/cuda/include)
 link_directories(/usr/local/cuda/lib64)
 
 # tensorrt
+#include_directories(/usr/include/x86_64-linux-gnu/)
+#link_directories(/usr/lib/x86_64-linux-gnu/)
 include_directories(/usr/local/TensorRT-7.2.2.3/include/)
 link_directories(/usr/local/TensorRT-7.2.2.3/lib/)
 

@@ -11,11 +11,11 @@ ubuntu18.04 cuda-11.1 tensorrt-7.2.2.3 opencv
     
     cd {WongKinYiu}/yolov7
     
-    wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7.pt
+    wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-tiny.pt
     
     python gen_wts.py
     
-    cp {WongKinYiu}/yolov7.wts {trt_yolov7}/
+    cp {WongKinYiu}/yolov7-tiny.wts {trt_yolov7}/
     
     cd {trt_yolov7}
     
@@ -29,7 +29,7 @@ ubuntu18.04 cuda-11.1 tensorrt-7.2.2.3 opencv
     
     make
     
-    ./demo -s ../yolov7.wts ../yolov7.engine
+    ./demo -s ../yolov7-tiny.wts ../yolov7-tiny.engine
     
-    ./demo -d ../yolov7.engine ../image/test.jpeg
+    ./demo -d ../yolov7-tiny.engine ../image/test.jpeg
 ```

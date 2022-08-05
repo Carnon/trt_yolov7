@@ -289,7 +289,7 @@ int inferImage(uint8_t* data, int w, int h, float* result){
     auto *output = new float[BOX_SIZE*6];
     context->enqueue(1, (void **)buffers, stream, nullptr);
     // 3. 解析yolo输出，使用cuda代码实现。
-    decode_output(buffers[1], pdst_device, INPUT_H, INPUT_W, 1/scale, stream);
+    decode_output(buffers[1], pdst_device, INPUT_H, INPUT_W, NUM_CLASS, 1/scale, stream);
     cudaMemcpyAsync(output, pdst_device, BOX_SIZE*6*sizeof(float), cudaMemcpyDeviceToHost, stream);
     cudaStreamSynchronize(stream);
 

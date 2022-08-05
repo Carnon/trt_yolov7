@@ -1,6 +1,6 @@
 #include "decode.h"
 
-__global__ void decode_output_kernel(float* src, float* dst, int input_width, int input_height, float scale, int jobs){
+__global__ void decode_output_kernel(float* src, float* dst, int input_width, int input_height, int num_class, float scale, int jobs){
     int position = blockDim.x * blockIdx.x + threadIdx.x;
     if(position >= jobs) return;
 
@@ -60,11 +60,11 @@ __global__ void decode_output_kernel(float* src, float* dst, int input_width, in
         y = (i - 80*80*3 - 40*40*3 - 20*20*2) / 20;
     }
 
-    float *row = src + 85*i;
+    float *row = src + (num_class+5)*i;
     int class_id = 0;
     float max_cls_prob = 0.0;
 
-    for(int j=5; j<85; j++){
+    for(int j=5; j<num_class+5; j++){
         if(row[j] > max_cls_prob){
             max_cls_prob = row[j];
             class_id = j - 5;
@@ -87,11 +87,11 @@ __global__ void decode_output_kernel(float* src, float* dst, int input_width, in
 }
 
 
-void decode_output(float* src, float* dst, int input_width, int input_height, float scale, cudaStream_t stream){
+void decode_output(float* src, float* dst, int input_width, int input_height, int num_class, float scale, cudaStream_t stream){
     int jobs = 80*80*3 + 40*40*3 + 20*20*3;
     int thread = 256;
 
     int blocks = (jobs+256-1) / thread;
     decode_output_kernel<<<blocks, thread, 0, stream>>>
-    (src, dst, input_width, input_height, scale, jobs);
+    (src, dst, input_width, input_height, num_class, scale, jobs);
 }

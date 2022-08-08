@@ -87,11 +87,11 @@ __global__ void decode_output_kernel(float* src, float* dst, int input_width, in
 }
 
 
-void decode_output(float* src, float* dst, int input_width, int input_height, float scale, cudaStream_t stream){
+void decode_output(float* src, float* dst, int input_width, int input_height, int num_class, float scale, cudaStream_t stream){
     int jobs = 80*80*3 + 40*40*3 + 20*20*3;
     int thread = 256;
 
     int blocks = (jobs+256-1) / thread;
     decode_output_kernel<<<blocks, thread, 0, stream>>>
-    (src, dst, input_width, input_height, scale, jobs);
+    (src, dst, input_width, input_height, num_class, scale, jobs);
 }

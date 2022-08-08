@@ -212,7 +212,7 @@ ICudaEngine* build_engine(IBuilder* builder, IBuilderConfig* config, DataType dt
     sf2->setSecondTranspose(Permutation{0, 2, 3, 1});
     IActivationLayer* act2 = network->addActivation(*sf2->getOutput(0), ActivationType::kSIGMOID);
     IShuffleLayer* out2 = network->addShuffle(*act2->getOutput(0));
-    out2->setReshapeDimensions(DimsHW{3*INPUT_H/32*INPUT_W/32, 85});
+    out2->setReshapeDimensions(DimsHW{3*INPUT_H/32*INPUT_W/32, NUM_CLASS+5});
 
     ITensor* outputTensors[] = {out0->getOutput(0), out1->getOutput(0), out2->getOutput(0)};
     IConcatenationLayer* output = network->addConcatenation(outputTensors, 3);
@@ -316,7 +316,7 @@ int inferImage(uint8_t* data, int w, int h, float* result){
     auto *output = new float[BOX_SIZE*6];
     context->enqueue(1, (void **)buffers, stream, nullptr);
     // 3. 解析yolo输出，使用cuda代码实现。
-    decode_output(buffers[1], pdst_device, INPUT_H, INPUT_W, 1/scale, stream);
+    decode_output(buffers[1], pdst_device, INPUT_H, INPUT_W, NUM_CLASS, 1/scale, stream);
     cudaMemcpyAsync(output, pdst_device, BOX_SIZE*6*sizeof(float), cudaMemcpyDeviceToHost, stream);
     cudaStreamSynchronize(stream);
 

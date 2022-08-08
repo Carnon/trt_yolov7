@@ -1,6 +1,6 @@
 #include "decode.h"
 
-__global__ void decode_output_kernel(float* src, float* dst, int input_width, int input_height, float scale, int jobs){
+__global__ void decode_output_kernel(float* src, float* dst, int input_width, int input_height, int NUM_CLASS, float scale, int jobs){
     int position = blockDim.x * blockIdx.x + threadIdx.x;
     if(position >= jobs) return;
 
@@ -60,11 +60,11 @@ __global__ void decode_output_kernel(float* src, float* dst, int input_width, in
         y = (i - 80*80*3 - 40*40*3 - 20*20*2) / 20;
     }
 
-    float *row = src + 85*i;
+    float *row = src + (NUM_CLASS+5)*i;
     int class_id = 0;
     float max_cls_prob = 0.0;
 
-    for(int j=5; j<85; j++){
+    for(int j=5; j<NUM_CLASS+5; j++){
         if(row[j] > max_cls_prob){
             max_cls_prob = row[j];
             class_id = j - 5;

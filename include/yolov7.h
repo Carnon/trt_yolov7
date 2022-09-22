@@ -4,6 +4,7 @@
 #include <iostream>
 #include "common.hpp"
 #include "logging.h"
+#include "decodelayer.h"
 
 
 ICudaEngine* build_engine(IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path);
@@ -39,7 +40,7 @@ void release();
 
 float IOUCalculate(const DetectRes &det_a, const DetectRes &det_b);
 void NmsDetect(std::vector<DetectRes> &detections);
-std::vector<DetectRes> postProcess(float *output);
+std::vector<DetectRes> postProcess(float *output, float scale);
 
 void hello();
 #endif //TRT_YOLOV7_H

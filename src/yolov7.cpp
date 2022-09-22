@@ -1,7 +1,6 @@
 #include <algorithm>
 #include "cuda_utils.h"
 #include "preprocess.h"
-#include "decode.h"
 #include "yolov7.h"
 
 static Logger gLogger;
@@ -12,7 +11,8 @@ static const int NUM_CLASS = 80;
 
 const char* INPUT_BLOB_NAME = "data";
 const char* OUTPUT_BLOB_NAME = "prob";
-static const int BOX_SIZE = 80*80*3 + 40*40*3 + 20*20*3;
+const int MAX_OBJECT_SIZE = 1000;
+const int MAX_IMAGE_INPUT_SIZE = 3000*3000;
 
 
 ICudaEngine* build_engine(IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path){
@@ -193,33 +193,13 @@ ICudaEngine* build_engine(IBuilder* builder, IBuilderConfig* config, DataType dt
     assert(cv105_2);
     cv105_2->setName("cv105.2");
 
-    IShuffleLayer* sf0 = network->addShuffle(*cv105_0->getOutput(0));
-    sf0->setReshapeDimensions(Dims4{3, NUM_CLASS+5, INPUT_H/8, INPUT_W/8});
-    sf0->setSecondTranspose(Permutation{0, 2, 3, 1});
-    IActivationLayer* act0 = network->addActivation(*sf0->getOutput(0), ActivationType::kSIGMOID);
-    IShuffleLayer* out0 = network->addShuffle(*act0->getOutput(0));
-    out0->setReshapeDimensions(DimsHW{3*INPUT_H/8*INPUT_W/8, NUM_CLASS+5});
-
-    IShuffleLayer* sf1 = network->addShuffle(*cv105_1->getOutput(0));
-    sf1->setReshapeDimensions(Dims4{3, NUM_CLASS+5, INPUT_H/16, INPUT_W/16});
-    sf1->setSecondTranspose(Permutation{0, 2, 3, 1});
-    IActivationLayer* act1 = network->addActivation(*sf1->getOutput(0), ActivationType::kSIGMOID);
-    IShuffleLayer* out1 = network->addShuffle(*act1->getOutput(0));
-    out1->setReshapeDimensions(DimsHW{3*INPUT_H/16*INPUT_W/16, NUM_CLASS+5});
-
-    IShuffleLayer* sf2 = network->addShuffle(*cv105_2->getOutput(0));
-    sf2->setReshapeDimensions(Dims4{3, NUM_CLASS+5, INPUT_H/32, INPUT_W/32});
-    sf2->setSecondTranspose(Permutation{0, 2, 3, 1});
-    IActivationLayer* act2 = network->addActivation(*sf2->getOutput(0), ActivationType::kSIGMOID);
-    IShuffleLayer* out2 = network->addShuffle(*act2->getOutput(0));
-    out2->setReshapeDimensions(DimsHW{3*INPUT_H/32*INPUT_W/32, NUM_CLASS+5});
-
-    ITensor* outputTensors[] = {out0->getOutput(0), out1->getOutput(0), out2->getOutput(0)};
-    IConcatenationLayer* output = network->addConcatenation(outputTensors, 3);
-    output->setAxis(0);
-
-    output->getOutput(0)->setName(OUTPUT_BLOB_NAME);
-    network->markOutput(*output->getOutput(0));
+    IActivationLayer* out0 = network->addActivation(*cv105_0->getOutput(0), ActivationType::kSIGMOID);
+    IActivationLayer* out1 = network->addActivation(*cv105_1->getOutput(0), ActivationType::kSIGMOID);
+    IActivationLayer* out2 = network->addActivation(*cv105_2->getOutput(0), ActivationType::kSIGMOID);
+    IPluginV2Layer* decode_out = addDecodeLayer(network, weightMap, std::vector<IActivationLayer*>{out0, out1, out2}, 3, NUM_CLASS, INPUT_W, INPUT_H, MAX_OBJECT_SIZE, "model.105");
+//    IPluginV2Layer* decode_out = addDecodeLayer(network, weightMap, std::vector<IConvolutionLayer*>{cv105_0, cv105_1, cv105_2}, 3, NUM_CLASS, INPUT_W, INPUT_H, MAX_OBJECT_SIZE, "model.105");
+    decode_out->getOutput(0)->setName(OUTPUT_BLOB_NAME);
+    network->markOutput(*decode_out->getOutput(0));
 
     builder->setMaxBatchSize(1);
     config->setMaxWorkspaceSize((1<<30));
@@ -281,14 +261,16 @@ void loadEngine(const char* engine_path){
     context = engine->createExecutionContext();
     assert(context != nullptr);
 
-    bufferSize[0] = 3*INPUT_H*INPUT_W*sizeof(float);
-    bufferSize[1] = BOX_SIZE*(NUM_CLASS+5)*sizeof(float);
-    int max_image_size = 3000*3000*3*sizeof(float);
+    CUDA_CHECK(cudaMalloc(&psrc_device, MAX_IMAGE_INPUT_SIZE*3*sizeof(float)));
 
-    CUDA_CHECK(cudaMalloc(&psrc_device, max_image_size));
-    CUDA_CHECK(cudaMalloc(&buffers[0], bufferSize[0]));
-    CUDA_CHECK(cudaMalloc(&buffers[1], bufferSize[1]));
-    CUDA_CHECK(cudaMalloc(&pdst_device, BOX_SIZE*6*sizeof(float)));
+//    bufferSize[0] = 3 * INPUT_H*INPUT_W * sizeof(float);
+//    bufferSize[1] = (MAX_OBJECT_SIZE*6+1) * sizeof(float);
+//    bufferSize[1] = BOX_SIZE*(NUM_CLASS+5)*sizeof(float);
+//    int max_image_size = 3000*3000*3*sizeof(float);
+//    CUDA_CHECK(cudaMalloc(&buffers[0], bufferSize[0]));
+//    CUDA_CHECK(cudaMalloc(&buffers[1], bufferSize[1]));
+//    CUDA_CHECK(cudaMalloc(&pdst_device, BOX_SIZE*6*sizeof(float)));
+
     CUDA_CHECK(cudaStreamCreate(&stream));
 
     std::cout<<"load engine ok! "<<std::endl;
@@ -299,7 +281,6 @@ void release(){
     CUDA_CHECK(cudaFree(psrc_device));
     CUDA_CHECK(cudaFree(buffers[0]));
     CUDA_CHECK(cudaFree(buffers[1]));
-    CUDA_CHECK(cudaFree(pdst_device));
     context->destroy();
     engine->destroy();
     runtime->destroy();
@@ -307,21 +288,19 @@ void release(){
 
 int inferImage(uint8_t* data, int w, int h, float* result){
     float scale = std::min(float(INPUT_H)/ float(h), float(INPUT_W) / float(w));
+
+    CUDA_CHECK(cudaMalloc(&buffers[0], INPUT_W*INPUT_H*3*sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&buffers[1], (MAX_OBJECT_SIZE+1)*6*sizeof(float)));
     CUDA_CHECK(cudaMemcpy(psrc_device, data, w*h*3, cudaMemcpyHostToDevice));
+    auto *output = new float[(MAX_OBJECT_SIZE+1)*6];
 
-    // 1. prepare img  仿射变换对图片resize大小 基于cuda实现
     resize_img(psrc_device, w, h, buffers[0], INPUT_W, INPUT_H, scale, stream);
-
-    // 2. model infer 模型推理
-    auto *output = new float[BOX_SIZE*6];
     context->enqueue(1, (void **)buffers, stream, nullptr);
-    // 3. 解析yolo输出，使用cuda代码实现。
-    decode_output(buffers[1], pdst_device, INPUT_H, INPUT_W, NUM_CLASS, 1/scale, stream);
-    cudaMemcpyAsync(output, pdst_device, BOX_SIZE*6*sizeof(float), cudaMemcpyDeviceToHost, stream);
+    CUDA_CHECK(cudaMemcpyAsync(output, (void *)buffers[1], (MAX_OBJECT_SIZE+1)*6*sizeof(float), cudaMemcpyDeviceToHost, stream));
     cudaStreamSynchronize(stream);
 
     //4. 后处理
-    auto boxes = postProcess(output);
+    auto boxes = postProcess(output, scale);
 
     int size = int(boxes.size());
     if(size > 1000) size = 1000;
@@ -366,21 +345,36 @@ void NmsDetect(std::vector<DetectRes> &detections) {
         return det.conf == 0.0; }), detections.end());
 }
 
-std::vector<DetectRes> postProcess(float *output){
+std::vector<DetectRes> postProcess(float *output, float scale){
+    int num = int(output[0]);
+    std::cout<<"total Object: "<<num<<std::endl;
     std::vector<DetectRes> result;
-    for(int i=0; i<BOX_SIZE; i++){
-        float* row = output + 6*i;
+    for(int i=0; i<num; i++){
+        float* row = output +1+ 6*i;
         if(row[5] > 0.50){
             DetectRes res;
-            res.x = row[0];
-            res.y = row[1];
-            res.w = row[2];
-            res.h = row[3];
+            res.x = row[0]/scale;
+            res.y = row[1]/scale;
+            res.w = row[2]/scale;
+            res.h = row[3]/scale;
             res.classId = int(row[4]);
             res.conf = row[5];
             result.push_back(res);
         }
     }
+//    for(int i=0; i<BOX_SIZE; i++){
+//        float* row = output + 6*i;
+//        if(row[5] > 0.50){
+//            DetectRes res;
+//            res.x = row[0];
+//            res.y = row[1];
+//            res.w = row[2];
+//            res.h = row[3];
+//            res.classId = int(row[4]);
+//            res.conf = row[5];
+//            result.push_back(res);
+//        }
+//    }
     NmsDetect(result);
     return result;
 }

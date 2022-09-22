@@ -8,6 +8,7 @@
 #include "NvInfer.h"
 #include <cassert>
 #include <cmath>
+#include "decodelayer.h"
 
 using namespace nvinfer1;
 
@@ -47,6 +48,14 @@ std::map<std::string, Weights> loadWeights(const std::string file) {
     }
 
     return weightMap;
+}
+
+
+std::vector<float> getAnchors(std::map<std::string, Weights>& weightMap, std::string lname){
+    Weights wts = weightMap[lname+".anchor_grid"];
+    auto *p = (const float*)wts.values;
+    std::vector<float> anchors(p, p+18);
+    return anchors;
 }
 
 // batch norm
@@ -160,6 +169,38 @@ IElementWiseLayer* RepConv(INetworkDefinition* network, std::map<std::string, We
     IActivationLayer* sigmoid = network->addActivation(*ew1->getOutput(0), ActivationType::kSIGMOID);
     IElementWiseLayer* ew2 = network->addElementWise(*ew1->getOutput(0), *sigmoid->getOutput(0), ElementWiseOperation::kPROD);
     return ew2;
+}
+
+// DecodeLayer
+IPluginV2Layer* addDecodeLayer(INetworkDefinition* network, std::map<std::string, Weights>& weightMap, const std::vector<IActivationLayer*>& dets, int nbInputs, int class_num, int input_w, int input_h, int max_out_object, std::string lname){
+
+    auto creator = getPluginRegistry()->getPluginCreator("DecodeLayer_TRT", "1");
+    PluginField pluginFields[2];
+    int netInfo[4] = {class_num, input_w, input_h, max_out_object};
+    pluginFields[0].data = netInfo;
+    pluginFields[0].length = 4;
+    pluginFields[0].name = "netInfo";
+    pluginFields[0].type = PluginFieldType::kFLOAT32;
+
+    std::vector<float> anchors = getAnchors(weightMap, lname);
+    pluginFields[1].data = &anchors[0];
+    pluginFields[1].length = (int)anchors.size();
+    pluginFields[1].name = "anchor";
+    pluginFields[1].type = PluginFieldType::kFLOAT32;
+
+    PluginFieldCollection plugin_data{};
+    plugin_data.nbFields = 2;
+    plugin_data.fields = pluginFields;
+
+    IPluginV2 *plugin_obj = creator->createPlugin("decodeLayer", &plugin_data);
+
+    std::vector<ITensor*> input_tensors;
+    for (auto det: dets) {
+        input_tensors.push_back(det->getOutput(0));
+    }
+
+    auto output = network->addPluginV2(&input_tensors[0], nbInputs, *plugin_obj);
+    return output;
 }
 
 #endif //YOLOV7_COMMON_H

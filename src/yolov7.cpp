@@ -313,6 +313,8 @@ int inferImage(uint8_t* data, int w, int h, float* result){
         result[5+6*i] = boxes[i].conf;
     }
 
+    CUDA_CHECK(cudaFree(buffers[0]));
+    CUDA_CHECK(cudaFree(buffers[1]));
     delete[] output;
     return size;
 }

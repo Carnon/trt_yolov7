@@ -261,17 +261,8 @@ void loadEngine(const char* engine_path){
     context = engine->createExecutionContext();
     assert(context != nullptr);
 
-    CUDA_CHECK(cudaMalloc(&psrc_device, MAX_IMAGE_INPUT_SIZE*3*sizeof(float)));
-
-//    bufferSize[0] = 3 * INPUT_H*INPUT_W * sizeof(float);
-//    bufferSize[1] = (MAX_OBJECT_SIZE*6+1) * sizeof(float);
-//    bufferSize[1] = BOX_SIZE*(NUM_CLASS+5)*sizeof(float);
-//    int max_image_size = 3000*3000*3*sizeof(float);
-//    CUDA_CHECK(cudaMalloc(&buffers[0], bufferSize[0]));
-//    CUDA_CHECK(cudaMalloc(&buffers[1], bufferSize[1]));
-//    CUDA_CHECK(cudaMalloc(&pdst_device, BOX_SIZE*6*sizeof(float)));
-
     CUDA_CHECK(cudaStreamCreate(&stream));
+    CUDA_CHECK(cudaMalloc(&psrc_device, MAX_IMAGE_INPUT_SIZE*3*sizeof(float)));
 
     std::cout<<"load engine ok! "<<std::endl;
 }
@@ -279,8 +270,6 @@ void loadEngine(const char* engine_path){
 void release(){
     cudaStreamDestroy(stream);
     CUDA_CHECK(cudaFree(psrc_device));
-    CUDA_CHECK(cudaFree(buffers[0]));
-    CUDA_CHECK(cudaFree(buffers[1]));
     context->destroy();
     engine->destroy();
     runtime->destroy();
@@ -349,7 +338,6 @@ void NmsDetect(std::vector<DetectRes> &detections) {
 
 std::vector<DetectRes> postProcess(float *output, float scale){
     int num = int(output[0]);
-    std::cout<<"total Object: "<<num<<std::endl;
     std::vector<DetectRes> result;
     for(int i=0; i<num; i++){
         float* row = output +1+ 6*i;
@@ -364,19 +352,6 @@ std::vector<DetectRes> postProcess(float *output, float scale){
             result.push_back(res);
         }
     }
-//    for(int i=0; i<BOX_SIZE; i++){
-//        float* row = output + 6*i;
-//        if(row[5] > 0.50){
-//            DetectRes res;
-//            res.x = row[0];
-//            res.y = row[1];
-//            res.w = row[2];
-//            res.h = row[3];
-//            res.classId = int(row[4]);
-//            res.conf = row[5];
-//            result.push_back(res);
-//        }
-//    }
     NmsDetect(result);
     return result;
 }

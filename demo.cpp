@@ -49,6 +49,16 @@ int main(int argc, char** argv){
         cv::imwrite("result.jpg", frame);
         delete[] result;
         release();
+    }else if(std::strcmp(argv[1], "-b") == 0){
+        std::string engine_path = argv[2];
+        std::string image_path = argv[3];
+        loadEngine(engine_path.c_str());
+        auto start = std::chrono::high_resolution_clock::now();
+        inferBatchImage(image_path.c_str());
+        auto end = std::chrono::high_resolution_clock::now();
+        auto total = std::chrono::duration<float, std::milli>(end - start).count();
+        std::cout<<"infer time: "<<total<<std::endl;
+        release();
     }else{
         std::cout<<"error params"<<std::endl;
     }

@@ -128,7 +128,7 @@ namespace nvinfer1{
                                  int classes, int outputElem){
 
         int idx = threadIdx.x + blockDim.x * blockIdx.x;
-        if (idx > noElements) return;
+        if (idx >= noElements) return;
 
         int totalGrid = yoloWidth * yoloHeight;
         int bnIdx = idx / totalGrid;
@@ -145,8 +145,8 @@ namespace nvinfer1{
             int class_id = 0;
             float max_cls_prob = 0.0;
 
-            for(int i=5; i<info_len_i; i++){
-                float p = curInput[idx + k * info_len_i * totalGrid + i * totalGrid];
+            for(int i=5; i<info_len_i; ++i){
+                float p = curInput[idx + k*info_len_i*totalGrid + i*totalGrid];
 
                 if (p > max_cls_prob) {
                     max_cls_prob = p;
@@ -163,10 +163,10 @@ namespace nvinfer1{
             int y = idx / yoloWidth;
             int x = idx % yoloWidth;
 
-            data[0] = (float(x) - 0.5f + 2* curInput[idx+k*info_len_i*totalGrid + 0 * totalGrid]) * float(input_w) / float(yoloWidth);
-            data[1] = (float(y) - 0.5f + 2* curInput[idx+k*info_len_i*totalGrid + 1 * totalGrid]) * float(input_h) / float(yoloHeight);
-            data[2] = pow(2.0f * curInput[idx + k*info_len_i * totalGrid + 2 * totalGrid], 2) * float(yoloAnchor[2*k]);
-            data[3] = pow(2.0f * curInput[idx + k*info_len_i * totalGrid + 3 * totalGrid], 2) * float(yoloAnchor[2*k+1]);
+            data[0] = (float(x) - 0.5f + 2.0f * curInput[idx + k*info_len_i*totalGrid + 0*totalGrid]) * float(input_w) / float(yoloWidth);
+            data[1] = (float(y) - 0.5f + 2.0f * curInput[idx + k*info_len_i*totalGrid + 1*totalGrid]) * float(input_h) / float(yoloHeight);
+            data[2] = pow(2.0f * curInput[idx + k*info_len_i*totalGrid + 2*totalGrid], 2) * float(yoloAnchor[2*k]);
+            data[3] = pow(2.0f * curInput[idx + k*info_len_i*totalGrid + 3*totalGrid], 2) * float(yoloAnchor[2*k+1]);
             data[4] = float(class_id);
             data[5] = box_prob * max_cls_prob;
         }

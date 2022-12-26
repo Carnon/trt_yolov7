@@ -1,17 +1,21 @@
 #include <algorithm>
+#include <opencv/opencv.hpp>
 #include "cuda_utils.h"
 #include "preprocess.h"
 #include "yolov7.h"
+#include "dirent.h"
 
 static Logger gLogger;
 
 static const int INPUT_W = 640;
 static const int INPUT_H = 640;
 static const int NUM_CLASS = 80;
+static const int BATCH_SIZE = 1;
 
 const char* INPUT_BLOB_NAME = "data";
 const char* OUTPUT_BLOB_NAME = "prob";
 const int MAX_OBJECT_SIZE = 1000;
+const int OUTPUT_SIZE = 6*1000+1;
 const int MAX_IMAGE_INPUT_SIZE = 3000*3000;
 
 
@@ -201,7 +205,7 @@ ICudaEngine* build_engine(IBuilder* builder, IBuilderConfig* config, DataType dt
     decode_out->getOutput(0)->setName(OUTPUT_BLOB_NAME);
     network->markOutput(*decode_out->getOutput(0));
 
-    builder->setMaxBatchSize(1);
+    builder->setMaxBatchSize(1 );
     config->setMaxWorkspaceSize((1<<30));
     config->setFlag(BuilderFlag::kFP16);
 
@@ -263,6 +267,8 @@ void loadEngine(const char* engine_path){
 
     CUDA_CHECK(cudaStreamCreate(&stream));
     CUDA_CHECK(cudaMalloc(&psrc_device, MAX_IMAGE_INPUT_SIZE*3*sizeof(float)));
+    CUDA_CHECK(cudaMalloc((void **)&buffers[0], BATCH_SIZE*3*INPUT_H*INPUT_W*sizeof(float)));
+    CUDA_CHECK(cudaMalloc((void **)&buffers[1], BATCH_SIZE*(MAX_OBJECT_SIZE*6+1)*sizeof(float)));
 
     std::cout<<"load engine ok! "<<std::endl;
 }
@@ -288,7 +294,6 @@ int inferImage(uint8_t* data, int w, int h, float* result){
     CUDA_CHECK(cudaMemcpyAsync(output, (void *)buffers[1], (MAX_OBJECT_SIZE+1)*6*sizeof(float), cudaMemcpyDeviceToHost, stream));
     cudaStreamSynchronize(stream);
 
-    //4. 后处理
     auto boxes = postProcess(output, scale);
 
     int size = int(boxes.size());
@@ -306,6 +311,101 @@ int inferImage(uint8_t* data, int w, int h, float* result){
     CUDA_CHECK(cudaFree(buffers[1]));
     delete[] output;
     return size;
+}
+
+
+static inline int read_files_in_dir(const char* p_dir_name, std::vector<std::string> &file_names){
+    DIR *p_dir = opendir(p_dir_name);
+
+    if(p_dir == nullptr){
+        return -1;
+    }
+
+    struct dirent* p_file = nullptr;
+    while ((p_file = readdir(p_dir)) != nullptr){
+        if(strcmp(p_file->d_name, ".") !=0 && strcmp(p_file->d_name, "..") !=0){
+
+            std::string cur_file_name(p_file->d_name);
+            file_names.push_back(cur_file_name);
+        }
+    }
+
+    closedir(p_dir);
+    return 0;
+}
+
+int inferBatchImage(const char* input_dir){
+//    std::string input_dir = "../image";
+    std::vector<std::string> file_names;
+    if(read_files_in_dir(input_dir, file_names) < 0){
+        std::cerr << "read_files_in dir failed. "<<std::endl;
+        return 0;
+    }
+
+    float *output = new float[BATCH_SIZE*(MAX_OBJECT_SIZE*6+1)];
+
+    uint8_t* img_host = nullptr;
+    uint8_t* img_device = nullptr;
+    // prepare input data cache in pinned memory
+    CUDA_CHECK(cudaMallocHost((void**)&img_host, MAX_IMAGE_INPUT_SIZE * 3));
+    // prepare input data cache in device memory
+    CUDA_CHECK(cudaMalloc((void**)&img_device, MAX_IMAGE_INPUT_SIZE * 3));
+
+    int fcount = 0;
+    std::vector<cv::Mat> imgs_buffer(BATCH_SIZE);
+    for(int f=0; f<file_names.size(); f++){
+        fcount++;
+        if(fcount < BATCH_SIZE && f+1 != (int)file_names.size()) continue;
+
+        auto* buffer_idx = (float*)buffers[0];
+        for(int b=0; b<fcount; b++){
+            cv::Mat img = cv::imread(std::string(input_dir)+"/"+file_names[f-fcount+1+b]);
+            if(img.empty()) continue;
+            imgs_buffer[b] = img;
+            size_t size_image = img.cols * img.rows * 3;
+            size_t size_image_dst = INPUT_H * INPUT_W * 3;
+            int w = img.cols;
+            int h = img.rows;
+            float scale = std::min(float(INPUT_H)/float(h), float(INPUT_W)/float(w));
+            memcpy(img_host, img.data, size_image);
+            CUDA_CHECK(cudaMemcpy(img_device, img_host, size_image, cudaMemcpyHostToDevice));
+            resize_img(img_device, w, h, buffer_idx, INPUT_W, INPUT_H, scale, stream);
+            buffer_idx += size_image_dst;
+        }
+
+        context->enqueue(BATCH_SIZE, (void **)buffers, stream, nullptr);
+
+        CUDA_CHECK(cudaMemcpyAsync(output, buffers[1], BATCH_SIZE*(MAX_OBJECT_SIZE*6+1)*sizeof(float), cudaMemcpyDeviceToHost, stream));
+        cudaStreamSynchronize(stream);
+
+        for(int b=0; b<fcount; b++){
+            cv::Mat img = imgs_buffer[b];
+            int w = img.cols;
+            int h = img.rows;
+            float scale = std::min(float(INPUT_H)/float(h), float(INPUT_W)/float(w));
+            float *out = output + b * (MAX_OBJECT_SIZE*6+1);
+            auto boxes = postProcess(out, scale);
+            for(int i=0; i<boxes.size(); i++){
+                float box_x = boxes[i].x;
+                float box_y = boxes[i].y;
+                float box_w = boxes[i].w;
+                float box_h = boxes[i].h;
+                std::string name = std::to_string(boxes[i].classId);
+
+                cv::putText(img, "0", cv::Point(int(std::max(0.0f, box_x-box_w/2)), int(std::max(box_y-box_h/2-5.0, 0.0))), cv::FONT_HERSHEY_COMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+                cv::Rect rst(int(boxes[i].x - boxes[i].w /2), int(boxes[i].y- boxes[i].h/2), int(boxes[i].w), int(boxes[i].h));
+                cv::rectangle(img, rst, cv::Scalar(255, 0, 0), 2, cv::LINE_8, 0);
+            }
+            cv::imwrite("__"+file_names[f-fcount+1+b], img);
+        }
+
+        fcount = 0;
+    }
+
+    delete[] output;
+    CUDA_CHECK(cudaFreeHost(img_host));
+    CUDA_CHECK(cudaFree(img_device));
+    return 0;
 }
 
 float IOUCalculate(const DetectRes &det_a, const DetectRes &det_b) {
@@ -339,7 +439,7 @@ void NmsDetect(std::vector<DetectRes> &detections) {
 std::vector<DetectRes> postProcess(float *output, float scale){
     int num = int(output[0]);
     std::vector<DetectRes> result;
-    for(int i=0; i<num; i++){
+    for(int i=1; i<num+1; i++){
         float* row = output +1+ 6*i;
         if(row[5] > 0.50){
             DetectRes res;

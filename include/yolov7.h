@@ -33,6 +33,7 @@ extern "C" {
 void loadEngine(const char *engine_path);
 int inferImage(uint8_t *image, int w, int h, float *result);
 void release();
+int inferBatchImage(const char* input_dir);
 
 #ifdef __cplusplus
 };

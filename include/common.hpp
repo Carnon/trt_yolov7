@@ -128,7 +128,7 @@ IElementWiseLayer* SPPCSPC(INetworkDefinition *network, std::map<std::string, We
     m3->setStrideNd(DimsHW{1, 1});
     m3->setPaddingNd(DimsHW{6, 6});
 
-    ITensor* input_tensors[] = {cv1->getOutput(0), m1->getOutput(0), m2->getOutput(0), m3->getOutput(0)};
+    ITensor* input_tensors[] = {cv4->getOutput(0), m1->getOutput(0), m2->getOutput(0), m3->getOutput(0)};
     IConcatenationLayer* concat = network->addConcatenation(input_tensors, 4);
     // 0U
     concat->setAxis(0);

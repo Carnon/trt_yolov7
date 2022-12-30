@@ -1,215 +1,229 @@
 #include <algorithm>
 #include <opencv/opencv.hpp>
 #include "cuda_utils.h"
-#include "preprocess.h"
 #include "yolov7.h"
-#include "dirent.h"
+
+#define DEVICE 0
 
 static Logger gLogger;
 
-static const int INPUT_W = 640;
-static const int INPUT_H = 640;
-static const int NUM_CLASS = 80;
+static const int INPUT_W = -1;
+static const int INPUT_H = -1;
+static const int NUM_CLASS = 1;
+static const int NUM_KPT = 17;
 static const int BATCH_SIZE = 1;
+static const int MAX_INPUT_SIZE = 1024;
+static const int MIN_INPUT_SIZE = 256;
+static const int OPT_INPUT_SIZE = 960;
 
 const char* INPUT_BLOB_NAME = "data";
 const char* OUTPUT_BLOB_NAME = "prob";
 const int MAX_OBJECT_SIZE = 1000;
-const int OUTPUT_SIZE = 6*1000+1;
 const int MAX_IMAGE_INPUT_SIZE = 3000*3000;
 
 
-ICudaEngine* build_engine(IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path){
+ICudaEngine* build_pose_engine(IBuilder* builder, IBuilderConfig* config, DataType dt, const std::string& wts_path){
     std::map<std::string, Weights> weightMap = loadWeights(wts_path);
 
-    INetworkDefinition* network = builder->createNetworkV2(0U);
-    ITensor* data = network->addInput(INPUT_BLOB_NAME, dt, Dims3{3, INPUT_H, INPUT_W});
+    INetworkDefinition* network = builder->createNetworkV2(1U);
+    ITensor* data = network->addInput(INPUT_BLOB_NAME, dt, Dims4{1, 3, INPUT_H, INPUT_W});
     assert(data);
 
     // backbone
-    IElementWiseLayer* ew0 = convBnSilu(network, weightMap, *data, 32, 3, 1, 1, "model.0");
+    IConcatenationLayer* conv0 = reOrg(network, weightMap, *data);
 
-    IElementWiseLayer* ew1 = convBnSilu(network, weightMap, *ew0->getOutput(0), 64, 3, 2, 1, "model.1");
-    IElementWiseLayer* ew2 = convBnSilu(network, weightMap, *ew1->getOutput(0), 64, 3, 1, 1, "model.2");
+    IElementWiseLayer* conv1 = convBnSilu(network, weightMap, *conv0->getOutput(0), 64, 3, 1, 1, "model.1");
+    IElementWiseLayer* conv2 = convBnSilu(network, weightMap, *conv1->getOutput(0), 128, 3, 2, 1, "model.2");
+    IElementWiseLayer* conv3 = convBnSilu(network, weightMap, *conv2->getOutput(0), 64, 1, 1, 0, "model.3");
+    IElementWiseLayer* conv4 = convBnSilu(network, weightMap, *conv2->getOutput(0), 64, 1, 1, 0, "model.4");
+    IElementWiseLayer* conv5 = convBnSilu(network, weightMap, *conv4->getOutput(0), 64, 3, 1, 1, "model.5");
+    IElementWiseLayer* conv6 = convBnSilu(network, weightMap, *conv5->getOutput(0), 64, 3, 1, 1, "model.6");
+    IElementWiseLayer* conv7 = convBnSilu(network, weightMap, *conv6->getOutput(0), 64, 3, 1, 1, "model.7");
+    IElementWiseLayer* conv8 = convBnSilu(network, weightMap, *conv7->getOutput(0), 64, 3, 1, 1, "model.8");
+    ITensor* input_tensor_9[] = {conv8->getOutput(0), conv6->getOutput(0), conv4->getOutput(0), conv3->getOutput(0)};
+    IConcatenationLayer* cat9 = network->addConcatenation(input_tensor_9, 4);
 
-    IElementWiseLayer* ew3 = convBnSilu(network, weightMap, *ew2->getOutput(0), 128, 3, 2, 1, "model.3");
-    IElementWiseLayer* ew4 = convBnSilu(network, weightMap, *ew3->getOutput(0), 64, 1, 1, 0, "model.4");
-    IElementWiseLayer* ew5 = convBnSilu(network, weightMap, *ew3->getOutput(0), 64, 1, 1, 0, "model.5");
-    IElementWiseLayer* ew6 = convBnSilu(network, weightMap, *ew5->getOutput(0), 64, 3, 1, 1, "model.6");
-    IElementWiseLayer* ew7 = convBnSilu(network, weightMap, *ew6->getOutput(0), 64, 3, 1, 1, "model.7");
-    IElementWiseLayer* ew8 = convBnSilu(network, weightMap, *ew7->getOutput(0), 64, 3, 1, 1, "model.8");
-    IElementWiseLayer* ew9 = convBnSilu(network, weightMap, *ew8->getOutput(0), 64, 3, 1, 1, "model.9");
-    ITensor* input_tensor_10[] = {ew9->getOutput(0), ew7->getOutput(0), ew5->getOutput(0), ew4->getOutput(0)};
-    IConcatenationLayer* concat10 = network->addConcatenation(input_tensor_10, 4);
-    concat10->setAxis(0);
-    IElementWiseLayer* ew11 = convBnSilu(network, weightMap, *concat10->getOutput(0), 256, 1, 1, 0, "model.11");
+    IElementWiseLayer* conv10 = convBnSilu(network, weightMap, *cat9->getOutput(0), 128, 1, 1, 0, "model.10");
+    IElementWiseLayer* conv11 = convBnSilu(network, weightMap, *conv10->getOutput(0), 256, 3, 2, 1, "model.11");
+    IElementWiseLayer* conv12 = convBnSilu(network, weightMap, *conv11->getOutput(0), 128, 1, 1, 0, "model.12");
+    IElementWiseLayer* conv13 = convBnSilu(network, weightMap, *conv11->getOutput(0), 128, 1, 1, 0, "model.13");
+    IElementWiseLayer* conv14 = convBnSilu(network, weightMap, *conv13->getOutput(0), 128, 3, 1, 1, "model.14");
+    IElementWiseLayer* conv15 = convBnSilu(network, weightMap, *conv14->getOutput(0), 128, 3, 1, 1, "model.15");
+    IElementWiseLayer* conv16 = convBnSilu(network, weightMap, *conv15->getOutput(0), 128, 3, 1, 1, "model.16");
+    IElementWiseLayer* conv17 = convBnSilu(network, weightMap, *conv16->getOutput(0), 128, 3, 1, 1, "model.17");
+    ITensor* input_tensor_18[] = {conv17->getOutput(0), conv15->getOutput(0), conv13->getOutput(0), conv12->getOutput(0)};
+    IConcatenationLayer* cat18 = network->addConcatenation(input_tensor_18, 4);
 
-    IPoolingLayer* mp12 = network->addPoolingNd(*ew11->getOutput(0), PoolingType::kMAX, DimsHW{2, 2});
-    mp12->setStrideNd(DimsHW{2, 2});
-    IElementWiseLayer* ew13 = convBnSilu(network, weightMap, *mp12->getOutput(0), 128, 1, 1, 0, "model.13");
-    IElementWiseLayer* ew14 = convBnSilu(network, weightMap, *ew11->getOutput(0), 128, 1, 1, 0, "model.14");
-    IElementWiseLayer* ew15 = convBnSilu(network, weightMap, *ew14->getOutput(0), 128, 3, 2, 1, "model.15");
-    ITensor* input_tensor_16[] = {ew15->getOutput(0), ew13->getOutput(0)};
-    IConcatenationLayer* concat16 = network->addConcatenation(input_tensor_16, 2);
-    IElementWiseLayer* ew17 = convBnSilu(network, weightMap, *concat16->getOutput(0), 128, 1, 1, 0, "model.17");
-    IElementWiseLayer* ew18 = convBnSilu(network, weightMap, *concat16->getOutput(0), 128 ,1, 1, 0, "model.18");
-    IElementWiseLayer* ew19 = convBnSilu(network, weightMap, *ew18->getOutput(0), 128, 3, 1, 1, "model.19");
-    IElementWiseLayer* ew20 = convBnSilu(network, weightMap, *ew19->getOutput(0), 128, 3, 1, 1, "model.20");
-    IElementWiseLayer* ew21 = convBnSilu(network, weightMap, *ew20->getOutput(0), 128, 3, 1, 1, "model.21");
-    IElementWiseLayer* ew22 = convBnSilu(network, weightMap, *ew21->getOutput(0), 128, 3, 1, 1, "model.22");
-    ITensor* input_tensor_23[] = {ew22->getOutput(0), ew20->getOutput(0), ew18->getOutput(0), ew17->getOutput(0)};
-    IConcatenationLayer* concat23 = network->addConcatenation(input_tensor_23, 4);
-    concat23->setAxis(0);
-    IElementWiseLayer* ew24 = convBnSilu(network, weightMap, *concat23->getOutput(0), 512, 1, 1, 0, "model.24");
+    IElementWiseLayer* conv19 = convBnSilu(network, weightMap, *cat18->getOutput(0), 256, 1, 1, 0, "model.19");
+    IElementWiseLayer* conv20 = convBnSilu(network, weightMap, *conv19->getOutput(0), 512, 3, 2, 1, "model.20");
+    IElementWiseLayer* conv21 = convBnSilu(network, weightMap, *conv20->getOutput(0), 256, 1, 1, 0, "model.21");
+    IElementWiseLayer* conv22 = convBnSilu(network, weightMap, *conv20->getOutput(0), 256, 1, 1, 0, "model.22");
+    IElementWiseLayer* conv23 = convBnSilu(network, weightMap, *conv22->getOutput(0), 256, 3, 1, 1, "model.23");
+    IElementWiseLayer* conv24 = convBnSilu(network, weightMap, *conv23->getOutput(0), 256, 3, 1, 1, "model.24");
+    IElementWiseLayer* conv25 = convBnSilu(network, weightMap, *conv24->getOutput(0), 256, 3, 1, 1, "model.25");
+    IElementWiseLayer* conv26 = convBnSilu(network, weightMap, *conv25->getOutput(0), 256, 3, 1, 1, "model.26");
+    ITensor* input_tensor_27[] = {conv26->getOutput(0), conv24->getOutput(0), conv22->getOutput(0), conv21->getOutput(0)};
+    IConcatenationLayer* cat27 = network->addConcatenation(input_tensor_27, 4);
 
-    IPoolingLayer* mp25 = network->addPoolingNd(*ew24->getOutput(0), PoolingType::kMAX, DimsHW{2, 2});
-    mp25->setStrideNd(DimsHW{2, 2});
-    IElementWiseLayer* ew26 = convBnSilu(network, weightMap, *mp25->getOutput(0), 256, 1, 1, 0, "model.26");
-    IElementWiseLayer* ew27 = convBnSilu(network, weightMap, *ew24->getOutput(0), 256, 1, 1, 0, "model.27");
-    IElementWiseLayer* ew28 = convBnSilu(network, weightMap, *ew27->getOutput(0), 256, 3, 2, 1, "model.28");
-    ITensor* input_tensor_29[] = {ew28->getOutput(0), ew26->getOutput(0)};
-    IConcatenationLayer* concat29 = network->addConcatenation(input_tensor_29, 2);
-    IElementWiseLayer* ew30 = convBnSilu(network, weightMap, *concat29->getOutput(0), 256, 1, 1, 0, "model.30");
-    IElementWiseLayer* ew31 = convBnSilu(network, weightMap, *concat29->getOutput(0), 256, 1, 1, 0, "model.31");
-    IElementWiseLayer* ew32 = convBnSilu(network, weightMap, *ew31->getOutput(0), 256, 3, 1, 1, "model.32");
-    IElementWiseLayer* ew33 = convBnSilu(network, weightMap, *ew32->getOutput(0), 256, 3, 1, 1, "model.33");
-    IElementWiseLayer* ew34 = convBnSilu(network, weightMap, *ew33->getOutput(0), 256, 3, 1, 1, "model.34");
-    IElementWiseLayer* ew35 = convBnSilu(network, weightMap, *ew34->getOutput(0), 256, 3, 1, 1, "model.35");
-    ITensor* input_tensor_36[] = {ew35->getOutput(0), ew33->getOutput(0), ew31->getOutput(0), ew30->getOutput(0)};
-    IConcatenationLayer* concat36 = network->addConcatenation(input_tensor_36, 4);
-    concat36->setAxis(0);
-    IElementWiseLayer* ew37 = convBnSilu(network, weightMap, *concat36->getOutput(0), 1024, 1, 1, 0, "model.37");
+    IElementWiseLayer* conv28 = convBnSilu(network, weightMap, *cat27->getOutput(0), 512, 1, 1, 0, "model.28");
+    IElementWiseLayer* conv29 = convBnSilu(network, weightMap, *conv28->getOutput(0), 768, 3, 2, 1, "model.29");
+    IElementWiseLayer* conv30 = convBnSilu(network, weightMap, *conv29->getOutput(0), 384, 1, 1, 0, "model.30");
+    IElementWiseLayer* conv31 = convBnSilu(network, weightMap, *conv29->getOutput(0), 384, 1, 1, 0, "model.31");
+    IElementWiseLayer* conv32 = convBnSilu(network, weightMap, *conv31->getOutput(0), 384, 3, 1, 1, "model.32");
+    IElementWiseLayer* conv33 = convBnSilu(network, weightMap, *conv32->getOutput(0), 384, 3, 1, 1, "model.33");
+    IElementWiseLayer* conv34 = convBnSilu(network, weightMap, *conv33->getOutput(0), 384, 3, 1, 1, "model.34");
+    IElementWiseLayer* conv35 = convBnSilu(network, weightMap, *conv34->getOutput(0), 384, 3, 1, 1, "model.35");
+    ITensor* input_tensor_36[] = {conv35->getOutput(0), conv33->getOutput(0), conv31->getOutput(0), conv30->getOutput(0)};
+    IConcatenationLayer* cat36 = network->addConcatenation(input_tensor_36, 4);
 
-    IPoolingLayer* mp38 = network->addPoolingNd(*ew37->getOutput(0), PoolingType::kMAX, DimsHW{2, 2});
-    mp38->setStrideNd(DimsHW{2, 2});
-    IElementWiseLayer* ew39 = convBnSilu(network, weightMap, *mp38->getOutput(0), 512, 1, 1, 0, "model.39");
-    IElementWiseLayer* ew40 = convBnSilu(network, weightMap, *ew37->getOutput(0), 512, 1, 1, 0, "model.40");
-    IElementWiseLayer* ew41 = convBnSilu(network, weightMap, *ew40->getOutput(0), 512, 3, 2, 1, "model.41");
-    ITensor* input_tensor_42[] = {ew41->getOutput(0), ew39->getOutput(0)};
-    IConcatenationLayer* concat42 = network->addConcatenation(input_tensor_42, 2);
-    concat42->setAxis(0);
-    IElementWiseLayer* ew43 = convBnSilu(network, weightMap, *concat42->getOutput(0), 256, 1, 1, 0, "model.43");
-    IElementWiseLayer* ew44 = convBnSilu(network, weightMap, *concat42->getOutput(0), 256, 1, 1, 0, "model.44");
-    IElementWiseLayer* ew45 = convBnSilu(network, weightMap, *ew44->getOutput(0), 256, 3, 1, 1, "model.45");
-    IElementWiseLayer* ew46 = convBnSilu(network, weightMap, *ew45->getOutput(0), 256, 3, 1, 1, "model.46");
-    IElementWiseLayer* ew47 = convBnSilu(network, weightMap, *ew46->getOutput(0), 256, 3, 1, 1, "model.47");
-    IElementWiseLayer* ew48 = convBnSilu(network, weightMap, *ew47->getOutput(0), 256, 3, 1, 1, "model.48");
-    ITensor* input_tensor_49[] = {ew48->getOutput(0), ew46->getOutput(0), ew44->getOutput(0), ew43->getOutput(0)};
-    IConcatenationLayer* concat49 = network->addConcatenation(input_tensor_49, 4);
-    concat49->setAxis(0);
-    IElementWiseLayer* ew50 = convBnSilu(network, weightMap, *concat49->getOutput(0), 1024, 1, 1, 0, "model.50");
+    IElementWiseLayer* conv37 = convBnSilu(network, weightMap, *cat36->getOutput(0), 768, 1, 1, 0, "model.37");
+    IElementWiseLayer* conv38 = convBnSilu(network, weightMap, *conv37->getOutput(0), 1024, 3, 2, 1, "model.38");
+    IElementWiseLayer* conv39 = convBnSilu(network, weightMap, *conv38->getOutput(0), 512, 1, 1, 0, "model.39");
+    IElementWiseLayer* conv40 = convBnSilu(network, weightMap, *conv38->getOutput(0), 512, 1, 1, 0, "model.40");
+    IElementWiseLayer* conv41 = convBnSilu(network, weightMap, *conv40->getOutput(0), 512, 3, 1, 1, "model.41");
+    IElementWiseLayer* conv42 = convBnSilu(network, weightMap, *conv41->getOutput(0), 512, 3, 1, 1, "model.42");
+    IElementWiseLayer* conv43 = convBnSilu(network, weightMap, *conv42->getOutput(0), 512, 3, 1, 1, "model.43");
+    IElementWiseLayer* conv44 = convBnSilu(network, weightMap, *conv43->getOutput(0), 512, 3, 1, 1, "model.44");
+    ITensor* input_tensor_45[] = {conv44->getOutput(0), conv42->getOutput(0), conv40->getOutput(0), conv39->getOutput(0)};
+    IConcatenationLayer* cat45 = network->addConcatenation(input_tensor_45, 4);
+
+    IElementWiseLayer* conv46 = convBnSilu(network, weightMap, *cat45->getOutput(0), 1024, 1, 1, 0, "model.46");
 
     // head
-    IElementWiseLayer* ew51 = SPPCSPC(network, weightMap, *ew50->getOutput(0), 512, "model.51");
+    IElementWiseLayer* conv47 = SPPCSPC(network, weightMap, *conv46->getOutput(0), 512, "model.47");
+    IElementWiseLayer* conv48 = convBnSilu(network, weightMap, *conv47->getOutput(0), 384, 1, 1, 0, "model.48");
+    float scale[] = {1.0, 1.0, 2.0, 2.0};
+    IResizeLayer* re49 = network->addResize(*conv48->getOutput(0));
+    re49->setResizeMode(ResizeMode::kNEAREST);
+    re49->setScales(scale, 4);
+    IElementWiseLayer* conv50 = convBnSilu(network, weightMap, *conv37->getOutput(0), 384, 1, 1, 0, "model.50");
+    ITensor* input_tensor_51[] = {conv50->getOutput(0), re49->getOutput(0)};
+    IConcatenationLayer* cat51 = network->addConcatenation(input_tensor_51, 2);
+    IElementWiseLayer* conv52 = convBnSilu(network, weightMap, *cat51->getOutput(0), 384, 1, 1, 0, "model.52");
+    IElementWiseLayer* conv53 = convBnSilu(network, weightMap, *cat51->getOutput(0), 384, 1, 1, 0, "model.53");
+    IElementWiseLayer* conv54 = convBnSilu(network, weightMap, *conv53->getOutput(0), 192, 3, 1, 1, "model.54");
+    IElementWiseLayer* conv55 = convBnSilu(network, weightMap, *conv54->getOutput(0), 192, 3, 1, 1, "model.55");
+    IElementWiseLayer* conv56 = convBnSilu(network, weightMap, *conv55->getOutput(0), 192, 3, 1, 1, "model.56");
+    IElementWiseLayer* conv57 = convBnSilu(network, weightMap, *conv56->getOutput(0), 192, 3, 1, 1, "model.57");
+    ITensor* input_tensor_58[] = {conv57->getOutput(0), conv56->getOutput(0), conv55->getOutput(0), conv54->getOutput(0), conv53->getOutput(0), conv52->getOutput(0)};
+    IConcatenationLayer* cat58 = network->addConcatenation(input_tensor_58, 6);
 
-    IElementWiseLayer* ew52 = convBnSilu(network, weightMap, *ew51->getOutput(0), 256, 1, 1, 0, "model.52");
-    float scale[] = {1.0, 2.0, 2.0};
-    IResizeLayer* re53 = network->addResize(*ew52->getOutput(0));
-    re53->setResizeMode(ResizeMode::kNEAREST);
-    re53->setScales(scale, 3);
-    IElementWiseLayer* ew54 = convBnSilu(network, weightMap, *ew37->getOutput(0), 256, 1, 1, 0, "model.54");
-    ITensor* input_tensor_55[] = {ew54->getOutput(0), re53->getOutput(0)};
-    IConcatenationLayer* concat55 = network->addConcatenation(input_tensor_55, 2);
-    concat55->setAxis(0);
+    IElementWiseLayer* conv59 = convBnSilu(network, weightMap, *cat58->getOutput(0), 384, 1, 1, 0, "model.59");
+    IElementWiseLayer* conv60 = convBnSilu(network, weightMap, *conv59->getOutput(0), 256, 1, 1, 0, "model.60");
+    IResizeLayer* re61 = network->addResize(*conv60->getOutput(0));
+    re61->setResizeMode(ResizeMode::kNEAREST);
+    re61->setScales(scale, 4);
+    IElementWiseLayer* conv62 = convBnSilu(network, weightMap, *conv28->getOutput(0), 256, 1, 1, 0, "model.62");
+    ITensor* input_tensor_63[] = {conv62->getOutput(0), re61->getOutput(0)};
+    IConcatenationLayer* cat63 = network->addConcatenation(input_tensor_63, 2);
+    IElementWiseLayer* conv64 = convBnSilu(network, weightMap, *cat63->getOutput(0), 256, 1, 1, 0, "model.64");
+    IElementWiseLayer* conv65 = convBnSilu(network, weightMap, *cat63->getOutput(0), 256, 1, 1, 0, "model.65");
+    IElementWiseLayer* conv66 = convBnSilu(network, weightMap, *conv65->getOutput(0), 128, 3, 1, 1, "model.66");
+    IElementWiseLayer* conv67 = convBnSilu(network, weightMap, *conv66->getOutput(0), 128, 3, 1, 1, "model.67");
+    IElementWiseLayer* conv68 = convBnSilu(network, weightMap, *conv67->getOutput(0), 128, 3, 1, 1, "model.68");
+    IElementWiseLayer* conv69 = convBnSilu(network, weightMap, *conv68->getOutput(0), 128, 3, 1, 1, "model.69");
+    ITensor* input_tensor_70[] = {conv69->getOutput(0), conv68->getOutput(0), conv67->getOutput(0), conv66->getOutput(0), conv65->getOutput(0), conv64->getOutput(0)};
+    IConcatenationLayer* cat70 = network->addConcatenation(input_tensor_70, 6);
 
-    IElementWiseLayer* ew56 = convBnSilu(network, weightMap, *concat55->getOutput(0), 256, 1, 1, 0, "model.56");
-    IElementWiseLayer* ew57 = convBnSilu(network, weightMap, *concat55->getOutput(0), 256, 1, 1, 0, "model.57");
-    IElementWiseLayer* ew58 = convBnSilu(network, weightMap, *ew57->getOutput(0), 128, 3, 1, 1, "model.58");
-    IElementWiseLayer* ew59 = convBnSilu(network, weightMap, *ew58->getOutput(0), 128, 3, 1, 1, "model.59");
-    IElementWiseLayer* ew60 = convBnSilu(network, weightMap, *ew59->getOutput(0), 128, 3, 1, 1, "model.60");
-    IElementWiseLayer* ew61 = convBnSilu(network, weightMap, *ew60->getOutput(0), 128, 3, 1, 1, "model.61");
-    ITensor* input_tensor_62[] = {ew61->getOutput(0), ew60->getOutput(0), ew59->getOutput(0), ew58->getOutput(0), ew57->getOutput(0), ew56->getOutput(0)};
-    IConcatenationLayer* concat62 = network->addConcatenation(input_tensor_62, 6);
-    IElementWiseLayer* ew63 = convBnSilu(network, weightMap, *concat62->getOutput(0), 256, 1, 1, 0, "model.63");
+    IElementWiseLayer* conv71 = convBnSilu(network, weightMap, *cat70->getOutput(0), 256, 1, 1, 0, "model.71");
+    IElementWiseLayer* conv72 = convBnSilu(network, weightMap, *conv71->getOutput(0), 128, 1, 1, 0, "model.72");
+    IResizeLayer* re73 = network->addResize(*conv72->getOutput(0));
+    re73->setScales(scale, 4);
+    re73->setResizeMode(ResizeMode::kNEAREST);
+    IElementWiseLayer* conv74 = convBnSilu(network, weightMap, *conv19->getOutput(0), 128, 1, 1, 0, "model.74");
+    ITensor* input_tensor_75[] = {conv74->getOutput(0), re73->getOutput(0)};
+    IConcatenationLayer* cat75 = network->addConcatenation(input_tensor_75, 2);
+    IElementWiseLayer* conv76 = convBnSilu(network, weightMap, *cat75->getOutput(0), 128, 1, 1, 0, "model.76");
+    IElementWiseLayer* conv77 = convBnSilu(network, weightMap, *cat75->getOutput(0), 128, 1, 1, 0, "model.77");
+    IElementWiseLayer* conv78 = convBnSilu(network, weightMap, *conv77->getOutput(0), 64, 3, 1, 1, "model.78");
+    IElementWiseLayer* conv79 = convBnSilu(network, weightMap, *conv78->getOutput(0), 64, 3, 1, 1, "model.79");
+    IElementWiseLayer* conv80 = convBnSilu(network, weightMap, *conv79->getOutput(0), 64, 3, 1, 1, "model.80");
+    IElementWiseLayer* conv81 = convBnSilu(network, weightMap, *conv80->getOutput(0), 64, 3, 1, 1, "model.81");
+    ITensor* input_tensor_82[] = {conv81->getOutput(0), conv80->getOutput(0), conv79->getOutput(0), conv78->getOutput(0), conv77->getOutput(0), conv76->getOutput(0)};
+    IConcatenationLayer* cat82 = network->addConcatenation(input_tensor_82, 6);
 
-    IElementWiseLayer* ew64 = convBnSilu(network, weightMap, *ew63->getOutput(0), 128, 1, 1, 0, "model.64");
-    IResizeLayer* re65 = network->addResize(*ew64->getOutput(0));
-    re65->setResizeMode(ResizeMode::kNEAREST);
-    re65->setScales(scale, 3);
-    IElementWiseLayer* ew66 = convBnSilu(network, weightMap, *ew24->getOutput(0), 128, 1, 1, 0, "model.66");
-    ITensor* input_tensor_67[] = {ew66->getOutput(0), re65->getOutput(0)};
-    IConcatenationLayer* concat67 = network->addConcatenation(input_tensor_67, 2);
-    concat67->setAxis(0);
+    IElementWiseLayer* conv83 = convBnSilu(network, weightMap, *cat82->getOutput(0), 128, 1, 1, 0, "model.83");
+    IElementWiseLayer* conv84 = convBnSilu(network, weightMap, *conv83->getOutput(0), 256, 3, 2, 1, "model.84");
+    ITensor* input_tensor_85[] = {conv84->getOutput(0), conv71->getOutput(0)};
+    IConcatenationLayer* cat85 = network->addConcatenation(input_tensor_85, 2);
+    IElementWiseLayer* conv86 = convBnSilu(network, weightMap, *cat85->getOutput(0), 256, 1, 1, 0, "model.86");
+    IElementWiseLayer* conv87 = convBnSilu(network, weightMap, *cat85->getOutput(0), 256, 1, 1, 0, "model.87");
+    IElementWiseLayer* conv88 = convBnSilu(network, weightMap, *conv87->getOutput(0), 128, 3, 1, 1, "model.88");
+    IElementWiseLayer* conv89 = convBnSilu(network, weightMap, *conv88->getOutput(0), 128, 3, 1, 1, "model.89");
+    IElementWiseLayer* conv90 = convBnSilu(network, weightMap, *conv89->getOutput(0), 128, 3, 1, 1, "model.90");
+    IElementWiseLayer* conv91 = convBnSilu(network, weightMap, *conv90->getOutput(0), 128, 3, 1, 1, "model.91");
+    ITensor* input_tensor_92[] = {conv91->getOutput(0), conv90->getOutput(0), conv89->getOutput(0), conv88->getOutput(0), conv87->getOutput(0), conv86->getOutput(0)};
+    IConcatenationLayer* cat92 = network->addConcatenation(input_tensor_92, 6);
 
-    IElementWiseLayer* ew68 = convBnSilu(network, weightMap, *concat67->getOutput(0), 128, 1, 1, 0, "model.68");
-    IElementWiseLayer* ew69 = convBnSilu(network, weightMap, *concat67->getOutput(0), 128, 1, 1, 0, "model.69");
-    IElementWiseLayer* ew70 = convBnSilu(network, weightMap, *ew69->getOutput(0), 64, 3, 1, 1, "model.70");
-    IElementWiseLayer* ew71 = convBnSilu(network, weightMap, *ew70->getOutput(0), 64, 3, 1, 1, "model.71");
-    IElementWiseLayer* ew72 = convBnSilu(network, weightMap, *ew71->getOutput(0), 64, 3, 1, 1, "model.72");
-    IElementWiseLayer* ew73 = convBnSilu(network, weightMap, *ew72->getOutput(0), 64, 3, 1, 1, "model.73");
-    ITensor* input_tensor_74[] = {ew73->getOutput(0), ew72->getOutput(0), ew71->getOutput(0), ew70->getOutput(0), ew69->getOutput(0), ew68->getOutput(0)};
-    IConcatenationLayer* concat74 = network->addConcatenation(input_tensor_74, 6);
-    concat74->setAxis(0);
-    IElementWiseLayer* ew75 = convBnSilu(network, weightMap, *concat74->getOutput(0), 128, 1, 1, 0, "model.75");
+    IElementWiseLayer* conv93 = convBnSilu(network, weightMap, *cat92->getOutput(0), 256, 1, 1, 0, "model.93");
+    IElementWiseLayer* conv94 = convBnSilu(network, weightMap, *conv93->getOutput(0), 384, 3, 2, 1, "model.94");
+    ITensor* input_tensor_95[] = {conv94->getOutput(0), conv59->getOutput(0)};
+    IConcatenationLayer* cat95 = network->addConcatenation(input_tensor_95, 2);
+    IElementWiseLayer* conv96 = convBnSilu(network, weightMap, *cat95->getOutput(0), 384, 1, 1, 0, "model.96");
+    IElementWiseLayer* conv97 = convBnSilu(network, weightMap, *cat95->getOutput(0), 384, 1, 1, 0, "model.97");
+    IElementWiseLayer* conv98 = convBnSilu(network, weightMap, *conv97->getOutput(0), 192, 3, 1, 1, "model.98");
+    IElementWiseLayer* conv99 = convBnSilu(network, weightMap, *conv98->getOutput(0), 192, 3, 1, 1, "model.99");
+    IElementWiseLayer* conv100 = convBnSilu(network, weightMap, *conv99->getOutput(0), 192, 3, 1, 1, "model.100");
+    IElementWiseLayer* conv101 = convBnSilu(network, weightMap, *conv100->getOutput(0), 192, 3, 1, 1, "model.101");
+    ITensor* input_tensor_102[] = {conv101->getOutput(0), conv100->getOutput(0), conv99->getOutput(0), conv98->getOutput(0), conv97->getOutput(0), conv96->getOutput(0)};
+    IConcatenationLayer* cat102 = network->addConcatenation(input_tensor_102, 6);
 
-    IPoolingLayer* mp76 = network->addPoolingNd(*ew75->getOutput(0), PoolingType::kMAX, DimsHW{2, 2});
-    mp76->setStrideNd(DimsHW{2, 2});
-    IElementWiseLayer* ew77 = convBnSilu(network, weightMap, *mp76->getOutput(0), 128, 1, 1, 0, "model.77");
-    IElementWiseLayer* ew78 = convBnSilu(network, weightMap, *ew75->getOutput(0), 128, 1, 1, 0, "model.78");
-    IElementWiseLayer* ew79 = convBnSilu(network, weightMap, *ew78->getOutput(0), 128, 3, 2, 1, "model.79");
-    ITensor* input_tensor_80[] = {ew79->getOutput(0), ew77->getOutput(0), ew63->getOutput(0)};
-    IConcatenationLayer* concat80 = network->addConcatenation(input_tensor_80, 3);
-    concat80->setAxis(0);
+    IElementWiseLayer* conv103 = convBnSilu(network, weightMap, *cat102->getOutput(0), 384, 1, 1, 0, "model.103");
+    IElementWiseLayer* conv104 = convBnSilu(network, weightMap, *conv103->getOutput(0), 512, 3, 2, 1, "model.104");
+    ITensor* input_tensor_105[] = {conv104->getOutput(0), conv47->getOutput(0)};
+    IConcatenationLayer* cat105 = network->addConcatenation(input_tensor_105, 2);
+    IElementWiseLayer* conv106 = convBnSilu(network, weightMap, *cat105->getOutput(0), 512, 1, 1, 0, "model.106");
+    IElementWiseLayer* conv107 = convBnSilu(network, weightMap, *cat105->getOutput(0), 512, 1, 1, 0, "model.107");
+    IElementWiseLayer* conv108 = convBnSilu(network, weightMap, *conv107->getOutput(0), 256, 3, 1, 1, "model.108");
+    IElementWiseLayer* conv109 = convBnSilu(network, weightMap, *conv108->getOutput(0), 256, 3, 1, 1, "model.109");
+    IElementWiseLayer* conv110 = convBnSilu(network, weightMap, *conv109->getOutput(0), 256, 3, 1, 1, "model.110");
+    IElementWiseLayer* conv111 = convBnSilu(network, weightMap, *conv110->getOutput(0), 256, 3, 1, 1, "model.111");
+    ITensor* input_tensor_112[] = {conv111->getOutput(0), conv110->getOutput(0), conv109->getOutput(0), conv108->getOutput(0), conv107->getOutput(0), conv106->getOutput(0)};
+    IConcatenationLayer* cat112 = network->addConcatenation(input_tensor_112, 6);
 
-    IElementWiseLayer* ew81 = convBnSilu(network, weightMap, *concat80->getOutput(0), 256, 1, 1, 0, "model.81");
-    IElementWiseLayer* ew82 = convBnSilu(network, weightMap, *concat80->getOutput(0), 256, 1, 1, 0, "model.82");
-    IElementWiseLayer* ew83 = convBnSilu(network, weightMap, *ew82->getOutput(0), 128, 3, 1, 1, "model.83");
-    IElementWiseLayer* ew84 = convBnSilu(network, weightMap, *ew83->getOutput(0), 128, 3, 1, 1, "model.84");
-    IElementWiseLayer* ew85 = convBnSilu(network, weightMap, *ew84->getOutput(0), 128 ,3, 1, 1, "model.85");
-    IElementWiseLayer* ew86 = convBnSilu(network, weightMap, *ew85->getOutput(0), 128, 3, 1, 1, "model.86");
-    ITensor* input_tensor_87[] = {ew86->getOutput(0), ew85->getOutput(0), ew84->getOutput(0), ew83->getOutput(0), ew82->getOutput(0), ew81->getOutput(0)};
-    IConcatenationLayer* concat87 = network->addConcatenation(input_tensor_87, 6);
-    concat87->setAxis(0);
-    IElementWiseLayer* ew88 = convBnSilu(network, weightMap, *concat87->getOutput(0), 256, 1, 1, 0, "model.88");
+    IElementWiseLayer* conv113 = convBnSilu(network, weightMap, *cat112->getOutput(0), 512, 1, 1, 0, "model.113");
 
-    IPoolingLayer* mp89 = network->addPoolingNd(*ew88->getOutput(0), PoolingType::kMAX, DimsHW{2, 2});
-    mp89->setStrideNd(DimsHW{2, 2});
-    IElementWiseLayer* ew90 = convBnSilu(network, weightMap, *mp89->getOutput(0), 256, 1, 1, 0, "model.90");
-    IElementWiseLayer* ew91 = convBnSilu(network, weightMap, *ew88->getOutput(0), 256, 1, 1, 0, "model.91");
-    IElementWiseLayer* ew92 = convBnSilu(network, weightMap, *ew91->getOutput(0), 256, 3, 2, 1, "model.92");
-    ITensor* input_tensor_93[] = {ew92->getOutput(0), ew90->getOutput(0), ew51->getOutput(0)};
-    IConcatenationLayer* concat93 = network->addConcatenation(input_tensor_93, 3);
-    concat93->setAxis(0);
+    IElementWiseLayer* conv114 = convBnSilu(network, weightMap, *conv83->getOutput(0), 256, 3, 1, 1, "model.114");
+    IElementWiseLayer* conv115 = convBnSilu(network, weightMap, *conv93->getOutput(0), 512, 3, 1, 1, "model.115");
+    IElementWiseLayer* conv116 = convBnSilu(network, weightMap, *conv103->getOutput(0), 768, 3, 1, 1, "model.116");
+    IElementWiseLayer* conv117 = convBnSilu(network, weightMap, *conv113->getOutput(0), 1024, 3, 1, 1, "model.117");
 
-    IElementWiseLayer* ew94 = convBnSilu(network, weightMap, *concat93->getOutput(0), 512, 1, 1, 0, "model.94");
-    IElementWiseLayer* ew95 = convBnSilu(network, weightMap, *concat93->getOutput(0), 512, 1, 1, 0, "model.95");
-    IElementWiseLayer* ew96 = convBnSilu(network, weightMap, *ew95->getOutput(0), 256, 3, 1, 1, "model.96");
-    IElementWiseLayer* ew97 = convBnSilu(network, weightMap, *ew96->getOutput(0), 256, 3, 1, 1, "model.97");
-    IElementWiseLayer* ew98 = convBnSilu(network, weightMap, *ew97->getOutput(0), 256, 3, 1, 1, "model.98");
-    IElementWiseLayer* ew99 = convBnSilu(network, weightMap, *ew98->getOutput(0), 256, 3, 1, 1, "model.99");
-    ITensor* input_tensor_100[] = {ew99->getOutput(0), ew98->getOutput(0), ew97->getOutput(0), ew96->getOutput(0), ew95->getOutput(0), ew94->getOutput(0)};
-    IConcatenationLayer* concat100 = network->addConcatenation(input_tensor_100, 6);
-    concat100->setAxis(0);
-    IElementWiseLayer* ew101 = convBnSilu(network, weightMap, *concat100->getOutput(0), 512, 1, 1, 0, "model.101");
+    // output
+    IElementWiseLayer* det0 = det(network, weightMap, *conv114->getOutput(0), 256, NUM_CLASS, "0");
+    IConvolutionLayer* kpt0 = kpt(network, weightMap, *conv114->getOutput(0), 256, NUM_KPT, "model.118.m_kpt.0");
+    ITensor* input_tensor_0[] = {det0->getOutput(0), kpt0->getOutput(0)};
+    IConcatenationLayer* out0 = network->addConcatenation(input_tensor_0, 2);
 
-    IElementWiseLayer* ew102 = RepConv(network, weightMap, *ew75->getOutput(0), 256, 3, 1, "model.102");
-    IElementWiseLayer* ew103 = RepConv(network, weightMap, *ew88->getOutput(0), 512, 3, 1, "model.103");
-    IElementWiseLayer* ew104 = RepConv(network, weightMap, *ew101->getOutput(0), 1024, 3, 1, "model.104");
+    IElementWiseLayer* det1 = det(network, weightMap, *conv115->getOutput(0), 512, NUM_CLASS, "1");
+    IConvolutionLayer* kpt1 = kpt(network, weightMap, *conv115->getOutput(0), 512, NUM_KPT, "model.118.m_kpt.1");
+    ITensor* input_tensor_1[] = {det1->getOutput(0), kpt1->getOutput(0)};
+    IConcatenationLayer* out1 = network->addConcatenation(input_tensor_1, 2);
 
-    // out
-    IConvolutionLayer* cv105_0 = network->addConvolutionNd(*ew102->getOutput(0), 3*(NUM_CLASS+5), DimsHW{1, 1}, weightMap["model.105.m.0.weight"], weightMap["model.105.m.0.bias"]);
-    assert(cv105_0);
-    cv105_0->setName("cv105.0");
-    IConvolutionLayer* cv105_1 = network->addConvolutionNd(*ew103->getOutput(0), 3*(NUM_CLASS+5), DimsHW{1, 1}, weightMap["model.105.m.1.weight"], weightMap["model.105.m.1.bias"]);
-    assert(cv105_1);
-    cv105_1->setName("cv105.1");
-    IConvolutionLayer* cv105_2 = network->addConvolutionNd(*ew104->getOutput(0), 3*(NUM_CLASS+5), DimsHW{1, 1}, weightMap["model.105.m.2.weight"], weightMap["model.105.m.2.bias"]);
-    assert(cv105_2);
-    cv105_2->setName("cv105.2");
+    IElementWiseLayer* det2 = det(network, weightMap, *conv116->getOutput(0), 768, NUM_CLASS, "2");
+    IConvolutionLayer* kpt2 = kpt(network, weightMap, *conv116->getOutput(0), 768, NUM_KPT, "model.118.m_kpt.2");
+    ITensor* input_tensor_2[] = {det2->getOutput(0), kpt2->getOutput(0)};
+    IConcatenationLayer* out2 = network->addConcatenation(input_tensor_2, 2);
 
-    IActivationLayer* out0 = network->addActivation(*cv105_0->getOutput(0), ActivationType::kSIGMOID);
-    IActivationLayer* out1 = network->addActivation(*cv105_1->getOutput(0), ActivationType::kSIGMOID);
-    IActivationLayer* out2 = network->addActivation(*cv105_2->getOutput(0), ActivationType::kSIGMOID);
-    IPluginV2Layer* decode_out = addDecodeLayer(network, weightMap, std::vector<IActivationLayer*>{out0, out1, out2}, 3, NUM_CLASS, INPUT_W, INPUT_H, MAX_OBJECT_SIZE, "model.105");
-//    IPluginV2Layer* decode_out = addDecodeLayer(network, weightMap, std::vector<IConvolutionLayer*>{cv105_0, cv105_1, cv105_2}, 3, NUM_CLASS, INPUT_W, INPUT_H, MAX_OBJECT_SIZE, "model.105");
-    decode_out->getOutput(0)->setName(OUTPUT_BLOB_NAME);
-    network->markOutput(*decode_out->getOutput(0));
+    IElementWiseLayer* det3 = det(network, weightMap, *conv117->getOutput(0), 1024, NUM_CLASS, "3");
+    IConvolutionLayer* kpt3 = kpt(network, weightMap, *conv117->getOutput(0), 1024, NUM_KPT, "model.118.m_kpt.3");
+    ITensor* input_tensor_3[] = {det3->getOutput(0), kpt3->getOutput(0)};
+    IConcatenationLayer* out3 = network->addConcatenation(input_tensor_3, 2);
 
-    builder->setMaxBatchSize(1 );
+    IPluginV2Layer* output = addDecodeLayer(network, weightMap, std::vector<IConcatenationLayer*>{out0, out1, out2, out3}, 4, NUM_CLASS, NUM_KPT, MAX_OBJECT_SIZE, "model.118");
+    output->getOutput(0)->setName(OUTPUT_BLOB_NAME);
+    network->markOutput(*output->getOutput(0));
+
+    IOptimizationProfile* profile = builder->createOptimizationProfile();
+    profile->setDimensions(INPUT_BLOB_NAME, OptProfileSelector::kMIN, Dims4(1, 3, MIN_INPUT_SIZE, MIN_INPUT_SIZE));
+    profile->setDimensions(INPUT_BLOB_NAME, OptProfileSelector::kOPT, Dims4(1, 3, OPT_INPUT_SIZE, OPT_INPUT_SIZE));
+    profile->setDimensions(INPUT_BLOB_NAME, OptProfileSelector::kMAX, Dims4(1, 3, MAX_INPUT_SIZE, MAX_INPUT_SIZE));
+    config->addOptimizationProfile(profile);
+
+    builder->setMaxBatchSize(1);
     config->setMaxWorkspaceSize((1<<30));
     config->setFlag(BuilderFlag::kFP16);
 
-    std::cout << "Building engine, please wait for a while..." << std::endl;
+    std::cout << "Building engine, please wait for a while... about ten years " << std::endl;
     ICudaEngine* engine = builder->buildEngineWithConfig(*network, *config);
     std::cout << "Build engine successfully!" << std::endl;
 
@@ -226,8 +240,7 @@ ICudaEngine* build_engine(IBuilder* builder, IBuilderConfig* config, DataType dt
 void serialize(const std::string& wts_path, const std::string& engine_path){
     IBuilder* builder = createInferBuilder(gLogger);
     IBuilderConfig* config = builder->createBuilderConfig();
-    ICudaEngine* engine = build_engine(builder, config, DataType::kFLOAT, wts_path);
-    assert(engine != nullptr);
+    ICudaEngine* engine = build_pose_engine(builder, config, DataType::kFLOAT, wts_path);
     IHostMemory* modelStream = engine->serialize();
     assert(modelStream != nullptr);
     std::ofstream p(engine_path, std::ios::binary);
@@ -237,221 +250,4 @@ void serialize(const std::string& wts_path, const std::string& engine_path){
     engine->destroy();
     builder->destroy();
     std::cout<<"convert ok!"<<std::endl;
-}
-
-void hello() {
-    std::cout << "Hello, World!" << std::endl;
-}
-
-void loadEngine(const char* engine_path){
-    std::string cached_engine;
-    std::fstream file;
-    file.open(engine_path, std::ios::in);
-    if(!file.is_open()){
-        std::cout<<"read engine file error"<<std::endl;
-        cached_engine = "";
-    }
-
-    while (file.peek() != EOF){
-        std::stringstream  buffer;
-        buffer << file.rdbuf();
-        cached_engine.append(buffer.str());
-    }
-    file.close();
-
-    runtime = nvinfer1::createInferRuntime(gLogger.getTRTLogger());
-    engine = runtime->deserializeCudaEngine(cached_engine.data(), cached_engine.size(), nullptr);
-    assert(engine != nullptr);
-    context = engine->createExecutionContext();
-    assert(context != nullptr);
-
-    CUDA_CHECK(cudaStreamCreate(&stream));
-    CUDA_CHECK(cudaMalloc(&psrc_device, MAX_IMAGE_INPUT_SIZE*3*sizeof(float)));
-    CUDA_CHECK(cudaMalloc((void **)&buffers[0], BATCH_SIZE*3*INPUT_H*INPUT_W*sizeof(float)));
-    CUDA_CHECK(cudaMalloc((void **)&buffers[1], BATCH_SIZE*(MAX_OBJECT_SIZE*6+1)*sizeof(float)));
-
-    std::cout<<"load engine ok! "<<std::endl;
-}
-
-void release(){
-    cudaStreamDestroy(stream);
-    CUDA_CHECK(cudaFree(psrc_device));
-    context->destroy();
-    engine->destroy();
-    runtime->destroy();
-}
-
-int inferImage(uint8_t* data, int w, int h, float* result){
-    float scale = std::min(float(INPUT_H)/ float(h), float(INPUT_W) / float(w));
-
-    CUDA_CHECK(cudaMalloc(&buffers[0], INPUT_W*INPUT_H*3*sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&buffers[1], (MAX_OBJECT_SIZE+1)*6*sizeof(float)));
-    CUDA_CHECK(cudaMemcpy(psrc_device, data, w*h*3, cudaMemcpyHostToDevice));
-    auto *output = new float[(MAX_OBJECT_SIZE+1)*6];
-
-    resize_img(psrc_device, w, h, buffers[0], INPUT_W, INPUT_H, scale, stream);
-    context->enqueue(1, (void **)buffers, stream, nullptr);
-    CUDA_CHECK(cudaMemcpyAsync(output, (void *)buffers[1], (MAX_OBJECT_SIZE+1)*6*sizeof(float), cudaMemcpyDeviceToHost, stream));
-    cudaStreamSynchronize(stream);
-
-    auto boxes = postProcess(output, scale);
-
-    int size = int(boxes.size());
-    if(size > 1000) size = 1000;
-    for(int i=0; i<size; i++){
-        result[0+6*i] = boxes[i].x;
-        result[1+6*i] = boxes[i].y;
-        result[2+6*i] = boxes[i].w;
-        result[3+6*i] = boxes[i].h;
-        result[4+6*i] = float(boxes[i].classId);
-        result[5+6*i] = boxes[i].conf;
-    }
-
-    CUDA_CHECK(cudaFree(buffers[0]));
-    CUDA_CHECK(cudaFree(buffers[1]));
-    delete[] output;
-    return size;
-}
-
-
-static inline int read_files_in_dir(const char* p_dir_name, std::vector<std::string> &file_names){
-    DIR *p_dir = opendir(p_dir_name);
-
-    if(p_dir == nullptr){
-        return -1;
-    }
-
-    struct dirent* p_file = nullptr;
-    while ((p_file = readdir(p_dir)) != nullptr){
-        if(strcmp(p_file->d_name, ".") !=0 && strcmp(p_file->d_name, "..") !=0){
-
-            std::string cur_file_name(p_file->d_name);
-            file_names.push_back(cur_file_name);
-        }
-    }
-
-    closedir(p_dir);
-    return 0;
-}
-
-int inferBatchImage(const char* input_dir){
-//    std::string input_dir = "../image";
-    std::vector<std::string> file_names;
-    if(read_files_in_dir(input_dir, file_names) < 0){
-        std::cerr << "read_files_in dir failed. "<<std::endl;
-        return 0;
-    }
-
-    float *output = new float[BATCH_SIZE*(MAX_OBJECT_SIZE*6+1)];
-
-    uint8_t* img_host = nullptr;
-    uint8_t* img_device = nullptr;
-    // prepare input data cache in pinned memory
-    CUDA_CHECK(cudaMallocHost((void**)&img_host, MAX_IMAGE_INPUT_SIZE * 3));
-    // prepare input data cache in device memory
-    CUDA_CHECK(cudaMalloc((void**)&img_device, MAX_IMAGE_INPUT_SIZE * 3));
-
-    int fcount = 0;
-    std::vector<cv::Mat> imgs_buffer(BATCH_SIZE);
-    for(int f=0; f<file_names.size(); f++){
-        fcount++;
-        if(fcount < BATCH_SIZE && f+1 != (int)file_names.size()) continue;
-
-        auto* buffer_idx = (float*)buffers[0];
-        for(int b=0; b<fcount; b++){
-            cv::Mat img = cv::imread(std::string(input_dir)+"/"+file_names[f-fcount+1+b]);
-            if(img.empty()) continue;
-            imgs_buffer[b] = img;
-            size_t size_image = img.cols * img.rows * 3;
-            size_t size_image_dst = INPUT_H * INPUT_W * 3;
-            int w = img.cols;
-            int h = img.rows;
-            float scale = std::min(float(INPUT_H)/float(h), float(INPUT_W)/float(w));
-            memcpy(img_host, img.data, size_image);
-            CUDA_CHECK(cudaMemcpy(img_device, img_host, size_image, cudaMemcpyHostToDevice));
-            resize_img(img_device, w, h, buffer_idx, INPUT_W, INPUT_H, scale, stream);
-            buffer_idx += size_image_dst;
-        }
-
-        context->enqueue(BATCH_SIZE, (void **)buffers, stream, nullptr);
-
-        CUDA_CHECK(cudaMemcpyAsync(output, buffers[1], BATCH_SIZE*(MAX_OBJECT_SIZE*6+1)*sizeof(float), cudaMemcpyDeviceToHost, stream));
-        cudaStreamSynchronize(stream);
-
-        for(int b=0; b<fcount; b++){
-            cv::Mat img = imgs_buffer[b];
-            int w = img.cols;
-            int h = img.rows;
-            float scale = std::min(float(INPUT_H)/float(h), float(INPUT_W)/float(w));
-            float *out = output + b * (MAX_OBJECT_SIZE*6+1);
-            auto boxes = postProcess(out, scale);
-            for(int i=0; i<boxes.size(); i++){
-                float box_x = boxes[i].x;
-                float box_y = boxes[i].y;
-                float box_w = boxes[i].w;
-                float box_h = boxes[i].h;
-                std::string name = std::to_string(boxes[i].classId);
-
-                cv::putText(img, "0", cv::Point(int(std::max(0.0f, box_x-box_w/2)), int(std::max(box_y-box_h/2-5.0, 0.0))), cv::FONT_HERSHEY_COMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
-                cv::Rect rst(int(boxes[i].x - boxes[i].w /2), int(boxes[i].y- boxes[i].h/2), int(boxes[i].w), int(boxes[i].h));
-                cv::rectangle(img, rst, cv::Scalar(255, 0, 0), 2, cv::LINE_8, 0);
-            }
-            cv::imwrite("__"+file_names[f-fcount+1+b], img);
-        }
-
-        fcount = 0;
-    }
-
-    delete[] output;
-    CUDA_CHECK(cudaFreeHost(img_host));
-    CUDA_CHECK(cudaFree(img_device));
-    return 0;
-}
-
-float IOUCalculate(const DetectRes &det_a, const DetectRes &det_b) {
-    float xx1 = std::max(det_a.x - det_a.w/2, det_b.x - det_b.w/2);
-    float yy1 = std::max(det_a.y - det_a.h/2, det_b.y - det_b.h/2);
-    float xx2 = std::min(det_a.x + det_a.w/2, det_b.x + det_b.w/2);
-    float yy2 = std::min(det_a.y + det_a.h/2, det_b.y + det_b.h/2);
-
-    if(xx1 > xx2 || yy1 > yy2) return 0.0;
-
-    float inter = (xx2 - xx1 + 1) * (yy2 - yy1 + 1);
-    return inter / (det_a.w * det_a.h + det_b.w * det_b.h - inter);
-}
-
-void NmsDetect(std::vector<DetectRes> &detections) {
-    sort(detections.begin(), detections.end(), [=](const DetectRes &left, const DetectRes &right) {
-        return left.conf > right.conf;
-    });
-
-    for (int i = 0; i < (int)detections.size(); i++)
-        for (int j = i + 1; j < (int)detections.size(); j++)
-            if (detections[i].classId == detections[j].classId){
-                float iou = IOUCalculate(detections[i], detections[j]);
-                if (iou > 0.35) detections[j].conf = 0.0;
-            }
-
-    detections.erase(std::remove_if(detections.begin(), detections.end(), [](const DetectRes &det){
-        return det.conf == 0.0; }), detections.end());
-}
-
-std::vector<DetectRes> postProcess(float *output, float scale){
-    int num = int(output[0]);
-    std::vector<DetectRes> result;
-    for(int i=1; i<num+1; i++){
-        float* row = output +1+ 6*i;
-        if(row[5] > 0.50){
-            DetectRes res;
-            res.x = row[0]/scale;
-            res.y = row[1]/scale;
-            res.w = row[2]/scale;
-            res.h = row[3]/scale;
-            res.classId = int(row[4]);
-            res.conf = row[5];
-            result.push_back(res);
-        }
-    }
-    NmsDetect(result);
-    return result;
 }

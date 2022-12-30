@@ -12,6 +12,18 @@
 
 using namespace nvinfer1;
 
+void debug_print(ITensor *input_tensor,std::string head){
+    std::cout << head<< " : ";
+
+    for (int i = 0; i < input_tensor->getDimensions().nbDims; i++)
+    {
+        std::cout << input_tensor->getDimensions().d[i] << " ";
+    }
+    std::cout<<std::endl;
+
+}
+
+
 // TensorRT weight files have a simple space delimited format:
 // [type] [size] <data x size in hex>
 std::map<std::string, Weights> loadWeights(const std::string file) {
@@ -54,7 +66,7 @@ std::map<std::string, Weights> loadWeights(const std::string file) {
 std::vector<float> getAnchors(std::map<std::string, Weights>& weightMap, std::string lname){
     Weights wts = weightMap[lname+".anchor_grid"];
     auto *p = (const float*)wts.values;
-    std::vector<float> anchors(p, p+18);
+    std::vector<float> anchors(p, p+24);
     return anchors;
 }
 
@@ -90,6 +102,38 @@ IScaleLayer* addBatchNorm2d(INetworkDefinition *network, std::map<std::string, W
     return scale_1;
 }
 
+
+// Reorg
+IConcatenationLayer* reOrg(INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input){
+    float scale[4] = {1.0, 1.0, 0.5, 0.5};
+    IResizeLayer* re = network->addResize(input);
+    re->setResizeMode(ResizeMode::kNEAREST);
+    re->setScales(scale, 4);
+    IShapeLayer* shape = network->addShape(*re->getOutput(0));
+
+    ISliceLayer* slice00 = network->addSlice(input, Dims4{0, 0, 0, 0}, Dims4{1, 3, -1, -1}, Dims4{1, 1, 2, 2});
+    assert(slice00);
+    slice00->setInput(2, *shape->getOutput(0));
+    slice00->setName("slice00");
+    ISliceLayer* slice10 = network->addSlice(input, Dims4{0, 0, 1, 0}, Dims4{1, 3, -1, -1}, Dims4{1, 1, 2, 2});
+    assert(slice10);
+    slice10->setInput(2, *shape->getOutput(0));
+    slice10->setName("slice10");
+    ISliceLayer* slice01 = network->addSlice(input, Dims4{0, 0, 0, 1}, Dims4{1, 3, -1, -1}, Dims4{1, 1, 2, 2});
+    assert(slice01);
+    slice01->setInput(2, *shape->getOutput(0));
+    slice01->setName("slice01");
+    ISliceLayer* slice11 = network->addSlice(input, Dims4{0, 0, 1, 1}, Dims4{1, 3, -1, -1}, Dims4{1, 1, 2, 2});
+    assert(slice11);
+    slice11->setInput(2, *shape->getOutput(0));
+    slice11->setName("slice11");
+
+    ITensor* input_tensors[] = {slice00->getOutput(0), slice10->getOutput(0), slice01->getOutput(0), slice11->getOutput(0)};
+    IConcatenationLayer* concat = network->addConcatenation(input_tensors, 4);
+
+    return concat;
+}
+
 // Conv
 IElementWiseLayer* convBnSilu(INetworkDefinition *network, std::map<std::string, Weights>& weightMap, ITensor& input, int c2, int k, int s, int p, std::string lname){
     Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
@@ -99,7 +143,7 @@ IElementWiseLayer* convBnSilu(INetworkDefinition *network, std::map<std::string,
     conv1->setStrideNd(DimsHW{s, s});
     conv1->setPaddingNd(DimsHW{p, p});
 
-    IScaleLayer* bn1 = addBatchNorm2d(network, weightMap, *conv1->getOutput(0), lname+".bn", 1e-5);
+    IScaleLayer* bn1 = addBatchNorm2d(network, weightMap, *conv1->getOutput(0), lname+".bn", 1e-3);
 
     // silu = x * sigmoid(x)
     IActivationLayer* sig1 = network->addActivation(*bn1->getOutput(0), ActivationType::kSIGMOID);
@@ -108,6 +152,27 @@ IElementWiseLayer* convBnSilu(INetworkDefinition *network, std::map<std::string,
     assert(ew1);
     return ew1;
 }
+
+// DWConv
+IElementWiseLayer* DWConv(INetworkDefinition *network, std::map<std::string, Weights>& weightMap, ITensor& input, int c2, int k, int s, int p, std::string lname){
+    Weights emptywts{ DataType::kFLOAT, nullptr, 0 };
+    IConvolutionLayer* conv1 = network->addConvolutionNd(input, c2, DimsHW{k, k}, weightMap[lname + ".conv.weight"], emptywts);
+    assert(conv1);
+    conv1->setName((lname+".conv").c_str());
+    conv1->setStrideNd(DimsHW{s, s});
+    conv1->setPaddingNd(DimsHW{p, p});
+    conv1->setNbGroups(c2);
+
+    IScaleLayer* bn1 = addBatchNorm2d(network, weightMap, *conv1->getOutput(0), lname+".bn", 1e-3);
+
+    // silu = x * sigmoid(x)
+    IActivationLayer* sig1 = network->addActivation(*bn1->getOutput(0), ActivationType::kSIGMOID);
+    assert(sig1);
+    IElementWiseLayer* ew1 = network->addElementWise(*bn1->getOutput(0), *sig1->getOutput(0), ElementWiseOperation::kPROD);
+    assert(ew1);
+    return ew1;
+}
+
 
 // SPPCSPC
 IElementWiseLayer* SPPCSPC(INetworkDefinition *network, std::map<std::string, Weights>& weightMap, ITensor& input, int c2, const std::string& lname){
@@ -128,19 +193,14 @@ IElementWiseLayer* SPPCSPC(INetworkDefinition *network, std::map<std::string, We
     m3->setStrideNd(DimsHW{1, 1});
     m3->setPaddingNd(DimsHW{6, 6});
 
-    ITensor* input_tensors[] = {cv1->getOutput(0), m1->getOutput(0), m2->getOutput(0), m3->getOutput(0)};
+    ITensor* input_tensors[] = {cv4->getOutput(0), m1->getOutput(0), m2->getOutput(0), m3->getOutput(0)};
     IConcatenationLayer* concat = network->addConcatenation(input_tensors, 4);
-    // 0U
-    concat->setAxis(0);
 
     IElementWiseLayer* cv5 = convBnSilu(network, weightMap, *concat->getOutput(0), c_, 1, 1, 0, lname+".cv5");
     IElementWiseLayer* cv6 = convBnSilu(network, weightMap, *cv5->getOutput(0), c_, 3, 1, 1, lname+".cv6");
 
     ITensor* input_tensors2[] = {cv6->getOutput(0), cv2->getOutput(0)};
     IConcatenationLayer* concat1 = network->addConcatenation(input_tensors2, 2);
-    // 0U
-    concat1->setAxis(0);
-
 
     IElementWiseLayer* cv7 = convBnSilu(network, weightMap, *concat1->getOutput(0), c2, 1, 1, 0, lname+".cv7");
     return cv7;
@@ -171,12 +231,46 @@ IElementWiseLayer* RepConv(INetworkDefinition* network, std::map<std::string, We
     return ew2;
 }
 
+
+// ia im m
+IElementWiseLayer* det(INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int c2, int num_class, std::string index){
+    IConstantLayer* implicitA = network->addConstant(Dims4{1, c2, 1, 1}, weightMap["model.118.ia."+index+".implicit"]);
+    IElementWiseLayer* ew1 = network->addElementWise(*implicitA->getOutput(0), input, ElementWiseOperation::kSUM);
+
+    IConvolutionLayer* cv1 = network->addConvolutionNd(*ew1->getOutput(0), (num_class+5)*3, DimsHW{1, 1}, weightMap["model.118.m."+index+".weight"], weightMap["model.118.m."+index+".bias"]);
+    assert(cv1);
+
+    IConstantLayer* implicitM = network->addConstant(Dims4{1, (num_class+5)*3, 1, 1}, weightMap["model.118.im."+index+".implicit"]);
+    IElementWiseLayer* ew2 = network->addElementWise(*implicitM->getOutput(0), *cv1->getOutput(0), ElementWiseOperation::kPROD);
+
+    assert(ew2);
+    return ew2;
+}
+
+// m_kpt
+IConvolutionLayer* kpt(INetworkDefinition* network, std::map<std::string, Weights>& weightMap, ITensor& input, int c2, int num_kpt, std::string lname){
+    IElementWiseLayer* cv0 = DWConv(network, weightMap, input, c2, 3, 1, 1, lname+".0");
+    IElementWiseLayer* cv1 = convBnSilu(network, weightMap, *cv0->getOutput(0), c2, 1, 1, 0, lname+".1");
+    IElementWiseLayer* cv2 = DWConv(network, weightMap, *cv1->getOutput(0), c2, 3, 1, 1, lname+".2");
+    IElementWiseLayer* cv3 = convBnSilu(network, weightMap, *cv2->getOutput(0), c2, 1, 1, 0, lname+".3");
+    IElementWiseLayer* cv4 = DWConv(network, weightMap, *cv3->getOutput(0), c2, 3, 1, 1, lname+".4");
+    IElementWiseLayer* cv5 = convBnSilu(network, weightMap, *cv4->getOutput(0), c2, 1, 1, 0, lname+".5");
+    IElementWiseLayer* cv6 = DWConv(network, weightMap, *cv5->getOutput(0), c2, 3, 1, 1, lname+".6");
+    IElementWiseLayer* cv7 = convBnSilu(network, weightMap, *cv6->getOutput(0), c2, 1, 1, 0, lname+".7");
+    IElementWiseLayer* cv8 = DWConv(network, weightMap, *cv7->getOutput(0), c2, 3, 1, 1, lname+".8");
+    IElementWiseLayer* cv9 = convBnSilu(network, weightMap, *cv8->getOutput(0), c2, 1, 1, 0, lname+".9");
+    IElementWiseLayer* cv10 = DWConv(network, weightMap, *cv9->getOutput(0), c2, 3, 1, 1, lname+".10");
+    IConvolutionLayer* cv11 = network->addConvolutionNd(*cv10->getOutput(0), num_kpt*3*3, DimsHW{1, 1}, weightMap[lname+".11.weight"], weightMap[lname+".11.bias"]);
+    return cv11;
+}
+
 // DecodeLayer
-IPluginV2Layer* addDecodeLayer(INetworkDefinition* network, std::map<std::string, Weights>& weightMap, const std::vector<IActivationLayer*>& dets, int nbInputs, int class_num, int input_w, int input_h, int max_out_object, std::string lname){
+IPluginV2Layer* addDecodeLayer(INetworkDefinition* network, std::map<std::string, Weights>& weightMap, const std::vector<IConcatenationLayer*>& dets, int nbInputs, int class_num, int kpt_num, int max_out_object, std::string lname){
 
     auto creator = getPluginRegistry()->getPluginCreator("DecodeLayer_TRT", "1");
+
     PluginField pluginFields[2];
-    int netInfo[4] = {class_num, input_w, input_h, max_out_object};
+    int netInfo[4] = {class_num, kpt_num, nbInputs, max_out_object};
     pluginFields[0].data = netInfo;
     pluginFields[0].length = 4;
     pluginFields[0].name = "netInfo";
